@@ -4,7 +4,7 @@
 
 让 DeepSeek Harness 引用并操作你已经打开、保持登录的 Chrome 和 Edge 页面，用精简的页面上下文和批量操作减少重复读取。
 
-`0.1.6` 改善桌面输入、快照句柄与连接界面，新增 `app_type` 打字和快捷键。支持页面元素批注和 `@` Windows 应用。批注先加入聊天草稿，可积累多条后按 Enter 发送；应用控制先查匹配的 MCP，已安装的本地 MCP 直接连接，缺少时询问安装；未发现 MCP 时使用 computer use。新提出的配置、远程端点和桌面驱动首次连接仍需确认，详见[批注与应用控制](docs/annotations-and-apps.md)。
+`0.1.7` 新增授权本地文件上传、轻量快照句柄、浏览器操作提示与停止按钮、可选主内容读取和复用 Windows helper。保留聊天草稿批注、`@` 应用引用和 MCP 优先的应用控制。方案逐项取舍、上传用法和实测限制见[架构优化说明](docs/architecture-optimization.md)，应用功能见[批注与应用控制](docs/annotations-and-apps.md)。
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -27,7 +27,7 @@
 
 项目由 DSH 插件和配套的 Manifest V3 浏览器扩展组成。插件接入原生 `@`、`/` 菜单，扩展提供标签页信息和控制通道。完成一次配对后，扩展会在后台重连，不必一直打开弹窗。
 
-当前版本为 **0.1.6**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
+当前版本为 **0.1.7**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
 
 ## 02 · 功能预览
 
@@ -50,9 +50,11 @@
 | 复用已有页面 | 连接 Chrome、Edge 的普通 HTTP/HTTPS 和已授权的本地 file:// 标签页，保留登录状态。 |
 | 原生页面引用 | 在 DSH 的 `@`、`/` 菜单中展示页面标题、站点和图标。 |
 | 精简读取 | 使用可访问性快照，支持选择器、查询过滤和游标分页；初始引用上下文默认共用 2,400 字符预算。 |
-| 批量操作 | 单次最多执行 12 个结构化动作，失败或发生导航时停止。 |
+| 批量操作 | 单次最多 12 步，支持上传；失败或文档导航时停止，query/hash 变化仅让观察或无目标动作继续。 |
 | 结果提取 | 按需返回 `text`、`value`、`href` 字段，每次提取最多 20 行。 |
-| 简短回执 | `observe: "summary"` 跳过下一次页面快照；动作结果有 1,600 字符输出预算。 |
+| 简短回执 | `summary` 不生成新快照；`handle` 返回新句柄和游标、不返回正文，使用 refs 前先读游标。 |
+| 文件上传 | 隐藏 input、自定义选择器和 iframe；需已选标签页及用户明确提供的绝对文件路径。 |
+| 浏览器停止 | 输入时显示独立停止按钮与目标光环，取消后报告已完成及可能不确定的效果。 |
 | 页面截图 | 将 PNG 保存到本地，返回文件路径，不把 base64 塞进文本上下文。 |
 | 后台连接 | 保存配对配置、自动重连，并在空闲时释放调试连接。 |
 | 元素批注 | 页面右上角“批注”选择元素，将说明、CSS 选择器、样式、位置和可选局部截图追加到聊天草稿；浮窗可拖动，多条批注一起发送。 |
@@ -131,7 +133,7 @@ dsh-doyourweb
 ### 构建并安装本地版本
 
 ```sh
-git clone --branch ver0.1.3 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.1.7 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -173,12 +175,13 @@ npm run build
 | 模型工具 | 用法 |
 | --- | --- |
 | `browser_read` | 默认 `mode: "auto"` 先检测 WebMCP，没有可用工具时返回 DOM 快照。工具不适合任务时用 `mode: "dom"`，可按 `selector`、`query`、`depth` 缩小范围；`cursor` 对 DOM 内容分页，`limit` 范围为 400～8,000 字符。 |
-| `browser_act` | 使用最新快照 ID，执行点击、填入、按键、选择、勾选、悬停、滚动、导航、前进后退、等待或提取。 |
+| `browser_act` | 使用最新快照 ID，执行点击、填入、按键、选择、勾选、悬停、滚动、导航、前进后退、等待、提取或上传。 |
+| `browser_upload` | 将 1～20 个用户明确给出的绝对路径文件挂载到文件 input 或选择器按钮，可用 `frame` 指定 iframe；需要当前快照，网站可能立即开始上传。 |
 | `browser_capture` | 需要检查画面时，将截图保存到本地。 |
 | `browser_webmcp_list` | 发现页面工具，或通过 `query` 缩小工具目录；目录有效时可直接复用。 |
 | `browser_webmcp_call` | 用 `catalog`、`name`、`arguments` 调用匹配的页面工具，成功后返回 `nextCatalog` 供下一次调用。 |
 
-同时授权了多个标签页时，工具调用需要通过 `tab` 指定已引用的页面。
+同时授权了多个标签页时，工具调用需要通过 `tab` 指定已引用的页面。DOM 读取可选 `scope: "main"`；默认 body 保留导航和对话框。`observe: "handle"` 不返回正文，使用 refs 前先读取其返回的 cursor；已知选择器可继续。上传路径授权和回执契约详见[架构优化说明](docs/architecture-optimization.md)。
 
 ### 批注与应用控制
 

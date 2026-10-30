@@ -1,6 +1,6 @@
 export const windowsInventory = String.raw`$ErrorActionPreference='SilentlyContinue'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new()
-Add-Type -TypeDefinition @'
+if (-not ('DshVisibleWindows' -as [type])) { Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -49,7 +49,7 @@ public static class DshVisibleWindows {
         EnumWindows(callback, IntPtr.Zero); return rows.ToArray();
     }
 }
-'@
+'@ }
 if (-not ('DshVisibleWindows' -as [type])) { throw 'Windows window inventory could not initialize' }
 $processes=@{}
 @(foreach ($window in [DshVisibleWindows]::List()) {

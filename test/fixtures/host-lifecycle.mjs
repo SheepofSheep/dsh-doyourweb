@@ -90,6 +90,24 @@ try {
     assert.equal(events.length, count + 1, "replaying a prepared user message must not read or discover again");
     await fiber.dispose();
     console.log("PASS: host context and browser_read discover WebMCP before DOM and allow intentional fallback.");
+  } else if (process.argv[3] === "upload-policy") {
+    BrowserEngine.prototype.upload = async (_ref, args) => ({ uploaded: args.files });
+    BrowserEngine.prototype.act = async (_ref, args) => ({ steps: args.steps.length });
+    const fiber = root.plugin(plugin); await fiber.await();
+    const agent = { session: { id: "upload-session" } }, ref = "dsh-browser://runtime/1";
+    const user = { id: "upload-user", source: { kind: "user" }, content: [{ type: "text", text: `Upload C:\\files\\report.txt to @[Tab](${ref})` }] };
+    await root.waterfall("agent/pre-step", { agent }, () => Promise.resolve({ kind: "enter", messages: [user] }));
+    assert.equal(user.content.length, 1, "context preparation never edits the original user message");
+    const upload = tools.get("browser_upload"), args = { snapshot: "current", selector: "input", files: ["C:\\files\\report.txt"] };
+    assert.equal(upload.presentCall(args).kind, "other");
+    assert.deepEqual((await upload.execute(args, { agent })).uploaded, args.files);
+    await assert.rejects(upload.execute({ ...args, files: ["C:\\secret.txt"] }, { agent }), /exact absolute file path/);
+    await assert.rejects(upload.execute({ ...args, files: ["C:\\files\\report.tx"] }, { agent }), /exact absolute file path/);
+    await assert.rejects(upload.execute(args, { agent: { session: { id: "other" } } }), /No browser tab is authorized/);
+    const tool = { id: "tool-path", source: { kind: "tool" }, content: [{ type: "text", text: "C:\\secret.txt" }] };
+    await root.waterfall("agent/pre-step", { agent }, () => Promise.resolve({ kind: "enter", messages: [tool] }));
+    await assert.rejects(tools.get("browser_act").execute({ snapshot: "current", steps: [{ op: "upload", selector: "input", files: ["C:\\secret.txt"] }] }, { agent }), /exact absolute file path/);
+    await fiber.dispose(); console.log("PASS: uploads require a selected tab and exact user-supplied file paths.");
   } else if (process.argv[3] === "grants") {
     // DSH claims one input batch per step, so only the step that carries the user
     // message sees the citation; every later step must keep the grant.

@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.1.6` improves desktop snapshots, input diagnostics and connection UI, and adds `app_type` for text plus key chords. It supports draggable element annotations collected in the chat draft and `@` references to running Windows apps. App control discovers matching MCPs first. Installed local MCPs connect directly; installation requests approval. With no matching MCP, use computer use. Windows are shown when possible while background execution remains available. See [annotations and app control](docs/annotations-and-apps.md#english).
+Version `0.1.7` adds authorized local-file uploads, compact snapshot handles, a browser stop HUD, optional main-content reads and a reusable Windows helper. It retains chat-draft annotations, `@` application references and MCP-first app control. See [optimization decisions and usage](docs/architecture-optimization.md#english) and [annotations and app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,7 +25,7 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.1.6** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.1.7** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
@@ -48,9 +48,11 @@ There is no public hosted demo. After the DSH plugin starts, its default local c
 | Existing tabs | Reuses regular HTTP/HTTPS and authorized local file:// tabs and their login state in Chrome and Edge. |
 | Native references | Lists page titles, sites and icons through DSH's `@` and `/` menus. |
 | Compact reading | Accessibility snapshots support selector/query narrowing and cursor pagination. Initial reference context shares a default 2,400-character budget. |
-| Batched actions | Runs up to 12 typed actions per call; stops on failure or navigation. |
+| Batched actions | Runs up to 12 typed actions per call, including uploads; stops on failure/document navigation. Query/hash routes only continue observations or target-free steps. |
 | Result extraction | Returns selected `text`, `value` and `href` fields, with up to 20 rows per extraction. |
-| Short receipts | `observe: "summary"` skips the next page snapshot. Action results have a 1,600-character output budget. |
+| Short receipts | `summary` skips the next snapshot; `handle` returns a fresh ID/cursor without text. Read its cursor before using element refs; known selectors may continue. |
+| File uploads | Hidden inputs, custom choosers and iframe selectors; requires a selected tab and exact user-supplied absolute file paths. |
+| Browser stop | Input displays private stop controls and a brief target highlight; cancellation stops later steps and reports uncertain effects. |
 | Screenshots | Saves PNG files locally and returns their paths instead of embedding base64. |
 | Background connection | Saves pairing settings, reconnects automatically, and releases idle debugger connections. |
 | Element annotations | Pick an element and send a comment, selector, styles, bounds and optional cropped screenshot to the chat draft. Drag the toolbar, collect multiple annotations, then press Enter in chat to send. |
@@ -128,7 +130,7 @@ This requires a published package. If the registry returns `404`, use the local 
 ### Build and Install Locally
 
 ```sh
-git clone --branch ver0.1.3 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.1.7 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -170,12 +172,13 @@ After referencing a page, you can ask:
 | Model tool | Use |
 | --- | --- |
 | `browser_read` | Default `mode: "auto"` discovers WebMCP tools first, otherwise returns a DOM snapshot. Use `mode: "dom"` when site tools do not cover the task; narrow with `selector`, `query` or `depth`. `cursor` paginates DOM content; `limit` accepts 400-8,000 characters. |
-| `browser_act` | Use the latest snapshot ID to click, fill, press, select, check, hover, scroll, navigate, go back/forward, wait or extract. |
+| `browser_act` | Use the latest snapshot ID to click, fill, press, select, check, hover, scroll, navigate, go back/forward, wait, extract or upload. |
+| `browser_upload` | Upload 1-20 user-specified absolute local file paths through a file input or chooser button, with optional iframe selector `frame`. Requires a current snapshot. Files may upload immediately. |
 | `browser_capture` | Save a screenshot when visual inspection is needed. |
 | `browser_webmcp_list` | Discover or narrow page tools with `query`; reuse an existing catalog while it remains valid. |
 | `browser_webmcp_call` | Call a matching page tool using `catalog`, `name` and `arguments`; success returns `nextCatalog` for another call. |
 
-When multiple tabs are authorized, pass the selected tab's reference as `tab`.
+When multiple tabs are authorized, pass the selected tab's reference as `tab`. DOM reads may opt into `scope: "main"`; default body retains navigation and dialogs. Upload authorization, handle receipts and measured limitations are described in the [optimization guide](docs/architecture-optimization.md).
 
 ### Annotations and App Control
 

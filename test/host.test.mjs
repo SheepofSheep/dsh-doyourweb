@@ -30,3 +30,5 @@ test("multi-tab initial context shares one serialized output budget",
   () => lifecycle("budget", /PASS: initial context shares/));
 test("host references and read tools prefer WebMCP and retain explicit DOM fallback",
   () => lifecycle("routing", /PASS: host context and browser_read discover/));
+test("upload tool and batches only disclose exact user-supplied paths to selected tabs",
+  () => lifecycle("upload-policy", /PASS: uploads require/));

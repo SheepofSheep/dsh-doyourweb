@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat, access, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
 import { canControl } from "./protocol.js";
 import { clip, serialize } from "./output.js";
+import { browserActivity } from "./activity.js";
 
 export function pageChunk(snapshot, offset = 0, limit = 2400) {
   if (!Number.isInteger(offset) || offset < 0 || offset > snapshot.text.length) throw new Error("Invalid snapshot cursor");
@@ -66,9 +68,14 @@ function boundAction(result) {
     }
   }
   while (serialize(result).length > 1400) {
-    const entry = result.results?.filter(entry => entry.rows.length)
+    const entry = result.results?.filter(entry => entry.rows?.length)
       .sort((a, b) => serialize(b).length - serialize(a).length)[0];
-    if (!entry) break;
+    if (!entry) {
+      const upload = result.results?.find(entry => entry.files?.length);
+      if (!upload) break;
+      upload.files.pop(); upload.omittedFiles = (upload.omittedFiles || 0) + 1;
+      continue;
+    }
     entry.rows.pop(); entry.omittedRows++; entry.truncated = true;
   }
   return result;
@@ -92,11 +99,16 @@ export class BrowserEngine {
     this.receipts.clear();
   }
 
-  async withPage(ref, operation, signal) {
+  async withPage(ref, operation, signal, active = false) {
     checkpoint(signal);
     const page = await this.bridge.page(ref);
-    try { return await operation(page); }
-    finally { this.bridge.release?.(ref); }
+    const controller = new AbortController();
+    const actionSignal = active && this.bridge.cdp ? signal ? AbortSignal.any([signal, controller.signal]) : controller.signal : signal;
+    let activity;
+    try {
+      if (active && this.bridge.cdp) activity = await browserActivity(this.bridge, ref, controller);
+      return await operation(page, actionSignal, activity);
+    } finally { await activity?.close(); this.bridge.release?.(ref); }
   }
 
   async serial(ref, operation) {
@@ -116,6 +128,10 @@ export class BrowserEngine {
     const before = await this.document(page);
     if (!canControl(before.url)) throw new Error("This tab navigated to an unsupported URL");
     let root = page.locator("body");
+    if (options.scope === "main") {
+      const main = page.locator("main, [role='main']");
+      if (await main.count() === 1 && await main.isVisible()) root = main;
+    }
     if (options.selector) root = page.locator(options.selector);
     if (options.query) root = root.getByText(options.query, { exact: false });
     const text = await root.ariaSnapshot({ mode: "ai", depth: options.depth || 8, timeout: 8000, signal });
@@ -139,8 +155,10 @@ export class BrowserEngine {
           throw new Error("Snapshot cursor is stale; read the page again without cursor");
         }
         checkpoint(signal);
-        return boundedChunk(state, Number(offset), limit, { tab: ref,
+        const chunk = boundedChunk(state, Number(offset), limit, { tab: ref,
           ...(this.receipts.has(ref) ? { lastAction: this.receipts.get(ref) } : {}) });
+        state.refsAvailable = true;
+        return chunk;
       }
       const state = await this.snapshot(ref, page, options, signal);
       checkpoint(signal);
@@ -154,17 +172,31 @@ export class BrowserEngine {
       if (!/^(?:f\d+)?e\d+$/.test(step.ref)) throw new Error("Use an element ref from the latest browser_read snapshot");
       return page.locator(`aria-ref=${step.ref}`);
     }
-    if (step.selector) return page.locator(step.selector);
+    if (step.selector) return step.frame ? page.frameLocator(step.frame).locator(step.selector) : page.locator(step.selector);
     throw new Error("Action requires ref or selector");
   }
 
   async act(ref, options, signal) {
-    return this.serial(ref, () => this.withPage(ref, async page => {
+    return this.serial(ref, () => this.withPage(ref, async (page, actionSignal, activity) => {
+      signal = actionSignal;
       checkpoint(signal);
       const state = this.states.get(ref);
-      const document = await this.document(page);
+      let document = await this.document(page);
       if (!state || options.snapshot !== state.id || document.epoch !== state.epoch || document.url !== state.url) {
         throw new Error("Snapshot is stale. Call browser_read before acting; no actions were performed.");
+      }
+      if (state.refsAvailable === false && options.steps.some(step => step.ref)) throw new Error("Handle receipt withheld element refs. Read its cursor before using refs, or continue with selectors; old refs must not be reused.");
+      const uploads = new Map();
+      for (const [index, step] of options.steps.entries()) if (step.op === "upload") {
+        if (!Array.isArray(step.files) || !step.files.length || step.files.length > 20) throw new Error("Upload requires 1-20 explicitly authorized absolute file paths");
+        const files = [];
+        for (const file of step.files) {
+          if (typeof file !== "string" || !path.isAbsolute(file)) throw new Error("Upload paths must be absolute local files");
+          const resolved = await realpath(file);
+          if (!(await stat(resolved)).isFile()) throw new Error("Upload requires a regular file, not a directory");
+          await access(resolved, constants.R_OK); files.push(resolved);
+        }
+        uploads.set(index, files);
       }
       const completed = [];
       const results = [];
@@ -192,7 +224,27 @@ export class BrowserEngine {
             await page.mouse.wheel(0, step.amount || 600);
           } else {
             const target = this.locator(page, step);
+            if (activity && !["wait", "extract", "upload"].includes(step.op)) await activity.pulse(target, signal).catch(() => {});
             if (step.op === "click") await target.click({ signal });
+            else if (step.op === "upload") {
+              const files = uploads.get(index);
+              const input = await target.evaluate(element => element.localName === "input" && element.type === "file", undefined, { timeout: 8000, signal });
+              if (input) await target.setInputFiles(files, { timeout: 8000, signal });
+              else {
+                // Cancel the waiter when its triggering click fails as well.
+                const chooserController = new AbortController();
+                const chooserSignal = signal ? AbortSignal.any([signal, chooserController.signal]) : chooserController.signal;
+                const pending = page.waitForEvent("filechooser", { timeout: 8000, signal: chooserSignal });
+                pending.catch(() => {});
+                try {
+                  await target.click({ timeout: 8000, signal });
+                  const chooser = await pending;
+                  checkpoint(signal);
+                  await chooser.setFiles(files, { timeout: 8000, signal });
+                } finally { chooserController.abort(); }
+              }
+              results.push({ index, files: files.map(file => clip(path.basename(file), 40)) });
+            }
             else if (step.op === "fill") await target.fill(step.value, { signal });
             else if (step.op === "press") await target.press(step.value, { signal });
             else if (step.op === "select") await target.selectOption(step.value, { signal });
@@ -227,7 +279,15 @@ export class BrowserEngine {
           completed.push({ index, op: step.op });
           checkpoint(signal);
           const after = await this.document(page);
-          if (after.epoch !== document.epoch || after.url !== document.url) { navigated = true; break; }
+          if (after.epoch !== document.epoch || after.url !== document.url) {
+            const previous = new URL(document.url), current = new URL(after.url);
+            const soft = after.epoch === document.epoch && current.origin === previous.origin && current.pathname === previous.pathname;
+            // A query/hash update does not prove DOM refs are still valid.
+            // Only selector-based observations or target-free navigation/scroll
+            // can follow; a selector alone cannot prove a changed form is safe.
+            if (soft && options.steps.slice(index + 1).every(next => !next.ref && ["wait", "extract", "scroll", "navigate", "back", "forward"].includes(next.op))) { document = after; }
+            else { navigated = true; break; }
+          }
         } catch (error) {
           cancelled = signal?.aborted === true;
           if (cancelled && attempted && completed.at(-1)?.index !== index) uncertainStep = index;
@@ -249,6 +309,10 @@ export class BrowserEngine {
       if (options.observe === "summary") return result;
       try {
         const next = await this.snapshot(ref, page, {}, signal);
+        if (options.observe === "handle") {
+          next.refsAvailable = false;
+          return boundAction({ ...result, snapshot: next.id, cursor: `${next.id}:0`, url: clip(next.url, 512), title: clip(next.title, 128), refs: "read_required" });
+        }
         return boundedChunk(next, 0, 1600, result);
       } catch (error) {
         if (signal?.aborted) {
@@ -258,7 +322,12 @@ export class BrowserEngine {
         }
         return boundAction({ ...result, url: clip(page.url(), 256), readError: clip(error.message, 200) });
       }
-    }, signal));
+    }, signal, true));
+  }
+
+  upload(ref, options, signal) {
+    return this.act(ref, { snapshot: options.snapshot, observe: options.observe,
+      steps: [{ op: "upload", ref: options.ref, selector: options.selector, frame: options.frame, files: options.files }] }, signal);
   }
 
   async capture(ref, options = {}, signal) {

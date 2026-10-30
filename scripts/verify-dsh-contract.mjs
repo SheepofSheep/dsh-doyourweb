@@ -65,7 +65,7 @@ async function extract(suffixes) {
     const size = header.readUInt32LE(12);
     const directory = Buffer.alloc(size);
     await handle.read(directory, 0, size, 16);
-    const base = 16 + size;
+    const base = 8 + header.readUInt32LE(4);
     const files = [];
     (function walk(node, prefix) {
       for (const [name, entry] of Object.entries(node.files ?? {})) {
@@ -76,7 +76,8 @@ async function extract(suffixes) {
     })(JSON.parse(directory.toString("utf8")));
     const extracted = new Map();
     for (const suffix of suffixes) {
-      const file = files.find(candidate => candidate.path.split("\\").join("/").endsWith(`/${suffix}`));
+      const alternatives = [suffix, suffix === "dsh-api-gateway/lib/client.js" ? "dsh-api-gateway/lib/client.browser.js" : suffix];
+      const file = alternatives.map(name => files.find(candidate => candidate.path.split("\\").join("/").endsWith(`/${name}`))).find(Boolean);
       assert.ok(file, `bundle not found in the archive: ${suffix}`);
       const buffer = Buffer.alloc(file.size);
       await handle.read(buffer, 0, file.size, file.offset);

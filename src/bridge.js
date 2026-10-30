@@ -331,6 +331,9 @@ export class BrowserBridge extends EventEmitter {
     const relay = { pathname, ref, profile, tabId, model };
     this.relays.set(pathname, relay);
     relay.ready = chromium.connectOverCDP(`ws://127.0.0.1:${this.port}${pathname}`, {
+      // The paired extension and this host share the local filesystem. Without
+      // isLocal, Playwright converts upload paths into base64 payloads.
+      isLocal: true,
       headers: { Authorization: `Bearer ${this.settings.token}` }, timeout: 15000,
     }).then(async browser => {
       relay.browser = browser;

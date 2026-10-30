@@ -76,7 +76,10 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
   function describe(element) {
     const box = element.getBoundingClientRect();
     const computed = getComputedStyle(element);
-    const styles = Object.fromEntries(["display", "position", "width", "height", "margin", "padding", "color", "backgroundColor", "fontSize", "fontFamily", "gap", "alignItems", "justifyContent"].map(name => [name, computed[name]]));
+    // Bounds already carry width/height. Keep typography and layout useful for
+    // design edits, while omitting empty/default spacing and stacking values.
+    const styles = Object.fromEntries(["display", "position", "visibility", "zIndex", "margin", "padding", "color", "backgroundColor", "fontSize", "fontFamily", "gap", "alignItems", "justifyContent"]
+      .map(name => [name, computed[name]]).filter(([name, value]) => value && !({ position: "static", visibility: "visible", zIndex: "auto", margin: "0px", padding: "0px", gap: "normal", alignItems: "normal", justifyContent: "normal" }[name] === value)));
     return { requestId: crypto.randomUUID(), url: location.href, title: document.title, selector: selectorFor(element),
       tag: element.localName, role: element.getAttribute("role"), ariaLabel: element.getAttribute("aria-label"),
       text: (element.matches("input,textarea,[contenteditable]") ? "" : element.innerText || element.textContent || "").slice(0, 600),
