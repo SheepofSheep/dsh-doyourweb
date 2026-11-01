@@ -430,6 +430,12 @@ try {
   if (artifactDir) await mkdir(artifactDir, { recursive: true });
   for (const width of [1280, 375]) {
     await reopened.setViewportSize({ width, height: 800 });
+    // setViewportSize can return before the browser dispatches resize and the
+    // toolbar clamps its position. Assert the settled UI, as the UI test does.
+    await reopened.waitForFunction(() => {
+      const box = document.querySelector('[data-dsh-annotation="toolbar"]').getBoundingClientRect();
+      return box.x >= 0 && box.right <= innerWidth;
+    });
     const box = await toolbar.boundingBox(); assert.ok(box.x >= 0 && box.x + box.width <= width, "annotation controls must fit mobile and desktop");
     if (artifactDir) await reopened.screenshot({ path: path.join(artifactDir, `annotation-${width}.png`) });
   }
