@@ -10,6 +10,7 @@ import { BrowserModel } from "./vendor/browser-model.js";
 import { extensionId, Pairings, pinnedExtensionId } from "./pairing.js";
 import { canControl, parseRef, tabRef } from "./protocol.js";
 import { managementPage } from "./manage.js";
+import { Diagnostics } from "./diagnostics.js";
 
 export { extensionId } from "./pairing.js";
 
@@ -23,7 +24,7 @@ function escapeHtml(value) {
 }
 
 export class BrowserBridge extends EventEmitter {
-  constructor({ home, port = 43187, extensionSource, idleTimeoutMs = 120000 } = {}) {
+  constructor({ home, port = 43187, extensionSource, idleTimeoutMs = 120000, diagnostics = new Diagnostics() } = {}) {
     super();
     this.home = home;
     this.port = port;
@@ -36,6 +37,7 @@ export class BrowserBridge extends EventEmitter {
     this.pairings = new Pairings();
     this.setupKey = randomBytes(16).toString("hex");
     this.sequence = 0;
+    this.diagnostics = diagnostics;
   }
 
   /**
@@ -267,10 +269,18 @@ export class BrowserBridge extends EventEmitter {
         } else if (profile && data.method === "dsh.annotation.start") {
           const selected = profile.tabs.get(data.params?.tabId);
           if (selected) this.emit("annotation", selected.ref);
+        } else if (data.method === "dsh.diagnostic" && profile) {
+          const pending = this.pending.get(data.params?.id);
+          if (pending?.ws === ws && ["extension_receive", "api_settle", "extension_response"].includes(data.params.phase)) {
+            this.diagnostics.record({ id: data.params.id, method: pending.method, phase: data.params.phase,
+              elapsedMs: Date.now() - pending.started, extensionVersion: data.params.version });
+          }
         } else if (data.id && this.pending.has(data.id)) {
           const pending = this.pending.get(data.id);
           if (pending.ws !== ws) throw new Error("Wrong connection for response");
           this.pending.delete(data.id); clearTimeout(pending.timer);
+          this.diagnostics.record({ id: data.id, method: pending.method, phase: "host_response",
+            elapsedMs: Date.now() - pending.started, error: data.error });
           data.error ? pending.reject(new Error(data.error)) : pending.resolve(data.result);
         } else if (profile && data.method === "chrome.debugger.onEvent") {
           const [source, method, params] = data.params;
@@ -288,7 +298,10 @@ export class BrowserBridge extends EventEmitter {
     ws.on("close", () => {
       if (profile && this.profiles.get(profile.id) === profile) this.profiles.delete(profile.id);
       for (const [id, pending] of this.pending) {
-        if (pending.ws === ws) { this.pending.delete(id); clearTimeout(pending.timer); pending.reject(new Error("Browser extension disconnected")); }
+        if (pending.ws === ws) {
+          this.diagnostics.record({ id, method: pending.method, phase: "disconnect", elapsedMs: Date.now() - pending.started, error: "disconnected" });
+          this.pending.delete(id); clearTimeout(pending.timer); pending.reject(new Error("Browser extension disconnected"));
+        }
       }
       for (const relay of [...this.relays.values()]) if (relay.profile === profile) this.dropRelay(relay);
     });
@@ -297,10 +310,17 @@ export class BrowserBridge extends EventEmitter {
   request(profile, method, params) {
     if (profile.ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Browser extension disconnected"));
     const id = ++this.sequence;
+    const started = Date.now();
+    const command = method === "chrome.debugger.sendCommand" ? params[1] : method;
+    this.diagnostics.record({ id, method: command, phase: "host_send" });
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Browser command timed out: ${method}`)); }, 15000);
-      this.pending.set(id, { resolve, reject, timer, ws: profile.ws });
-      profile.ws.send(JSON.stringify({ id, method, params }));
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        this.diagnostics.record({ id, method: command, phase: "timeout", elapsedMs: Date.now() - started, error: "timeout" });
+        reject(new Error(`Browser command timed out: ${command} (request ${id})`));
+      }, 15000);
+      this.pending.set(id, { resolve, reject, timer, ws: profile.ws, method: command, started });
+      profile.ws.send(JSON.stringify({ id, method, params, diagnostics: this.diagnostics.enabled }));
     });
   }
 
@@ -330,6 +350,8 @@ export class BrowserBridge extends EventEmitter {
     model.onTabCreated(tab);
     const relay = { pathname, ref, profile, tabId, model };
     this.relays.set(pathname, relay);
+    const connectionId = `connect-${++this.sequence}`, started = Date.now();
+    this.diagnostics.record({ id: connectionId, method: "connectOverCDP", phase: "connect_start" });
     relay.ready = chromium.connectOverCDP(`ws://127.0.0.1:${this.port}${pathname}`, {
       // The paired extension and this host share the local filesystem. Without
       // isLocal, Playwright converts upload paths into base64 payloads.
@@ -343,8 +365,12 @@ export class BrowserBridge extends EventEmitter {
       page.setDefaultTimeout(8000);
       page.setDefaultNavigationTimeout(12000);
       await this.decoratePage?.(ref, page);
+      this.diagnostics.record({ id: connectionId, method: "connectOverCDP", phase: "connect_ready", elapsedMs: Date.now() - started });
       return page;
-    }).catch(error => { this.dropRelay(relay); throw error; });
+    }).catch(error => {
+      this.diagnostics.record({ id: connectionId, method: "connectOverCDP", phase: "connect_failed", elapsedMs: Date.now() - started, error });
+      this.dropRelay(relay); throw error;
+    });
     return relay.ready;
   }
 

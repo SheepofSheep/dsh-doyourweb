@@ -5,6 +5,7 @@ import { constants } from "node:fs";
 import { canControl } from "./protocol.js";
 import { clip, serialize } from "./output.js";
 import { browserActivity } from "./activity.js";
+import { NetworkCapture } from "./network.js";
 
 export function pageChunk(snapshot, offset = 0, limit = 2400) {
   if (!Number.isInteger(offset) || offset < 0 || offset > snapshot.text.length) throw new Error("Invalid snapshot cursor");
@@ -89,7 +90,8 @@ export class BrowserEngine {
     this.states = new Map();
     this.queues = new Map();
     this.receipts = new Map();
-    this.onRelease = ref => this.states.delete(ref);
+    this.networks = new Map();
+    this.onRelease = ref => { this.states.delete(ref); this.networks.get(ref)?.close(); this.networks.delete(ref); };
     this.bridge.on?.("release", this.onRelease);
   }
 
@@ -97,6 +99,8 @@ export class BrowserEngine {
     this.bridge.off?.("release", this.onRelease);
     this.states.clear();
     this.receipts.clear();
+    for (const capture of this.networks.values()) capture.close();
+    this.networks.clear();
   }
 
   async withPage(ref, operation, signal, active = false) {
@@ -185,9 +189,9 @@ export class BrowserEngine {
       if (!state || options.snapshot !== state.id || document.epoch !== state.epoch || document.url !== state.url) {
         throw new Error("Snapshot is stale. Call browser_read before acting; no actions were performed.");
       }
-      if (state.refsAvailable === false && options.steps.some(step => step.ref)) throw new Error("Handle receipt withheld element refs. Read its cursor before using refs, or continue with selectors; old refs must not be reused.");
+      if (state.refsAvailable === false && options.steps.some(step => step.ref || step.toRef)) throw new Error("Handle receipt withheld element refs. Read its cursor before using refs, or continue with selectors; old refs must not be reused.");
       const uploads = new Map();
-      for (const [index, step] of options.steps.entries()) if (step.op === "upload") {
+      for (const [index, step] of options.steps.entries()) if (step.op === "upload" || step.op === "drop" && step.files) {
         if (!Array.isArray(step.files) || !step.files.length || step.files.length > 20) throw new Error("Upload requires 1-20 explicitly authorized absolute file paths");
         const files = [];
         for (const file of step.files) {
@@ -226,6 +230,14 @@ export class BrowserEngine {
             const target = this.locator(page, step);
             if (activity && !["wait", "extract", "upload"].includes(step.op)) await activity.pulse(target, signal).catch(() => {});
             if (step.op === "click") await target.click({ signal });
+            else if (step.op === "drag") {
+              const destination = this.locator(page, { ref: step.toRef, selector: step.toSelector, frame: step.frame });
+              await target.dragTo(destination, { timeout: 8000, signal });
+            }
+            else if (step.op === "drop") {
+              await target.drop({ ...(uploads.has(index) ? { files: uploads.get(index) } : {}), ...(step.data ? { data: step.data } : {}) }, { timeout: 8000, signal });
+              if (uploads.has(index)) results.push({ index, files: uploads.get(index).map(file => clip(path.basename(file), 40)) });
+            }
             else if (step.op === "upload") {
               const files = uploads.get(index);
               const input = await target.evaluate(element => element.localName === "input" && element.type === "file", undefined, { timeout: 8000, signal });
@@ -290,7 +302,7 @@ export class BrowserEngine {
           }
         } catch (error) {
           cancelled = signal?.aborted === true;
-          if (cancelled && attempted && completed.at(-1)?.index !== index) uncertainStep = index;
+          if ((cancelled || ["drag", "drop"].includes(step.op)) && attempted && completed.at(-1)?.index !== index) uncertainStep = index;
           failure = { index, op: step.op, error: clip(error.message || error, 200) };
           break;
         }
@@ -328,6 +340,22 @@ export class BrowserEngine {
   upload(ref, options, signal) {
     return this.act(ref, { snapshot: options.snapshot, observe: options.observe,
       steps: [{ op: "upload", ref: options.ref, selector: options.selector, frame: options.frame, files: options.files }] }, signal);
+  }
+
+  async network(ref, options = {}, signal) {
+    return this.serial(ref, () => this.withPage(ref, async page => {
+      checkpoint(signal);
+      let capture = this.networks.get(ref);
+      if (options.action === "start" && !capture?.active) {
+        capture?.close();
+        capture = new NetworkCapture(page);
+        this.networks.set(ref, capture);
+      }
+      if (!capture) return { tab: ref, capturing: false, capturingSince: null, requests: [], note: "Not recording. Use action:start before the activity; past requests cannot be recovered." };
+      if (options.action === "stop") capture.close();
+      if (options.action === "clear") capture.clear();
+      return { tab: ref, ...capture.result(options) };
+    }, signal));
   }
 
   async capture(ref, options = {}, signal) {

@@ -110,7 +110,7 @@ async function verifyRegistry(bundle) {
   const context = new Context();
   new TypertRegistry(context);
   const dispose = context.typert.register(hostContribution);
-  const payloads = { list: { query: "docs" }, setup: {}, focus: { ref: "dsh-browser://profile/1" }, apps: { query: "Unity" }, annotationSession: { client: "verify", revision: 1, sessionId: "verify", title: "Test", active: true }, manage: {} };
+  const payloads = { list: { query: "docs" }, setup: {}, focus: { ref: "dsh-browser://profile/1" }, apps: { query: "Unity" }, annotationSession: { client: "verify", revision: 1, sessionId: "verify", title: "Test", active: true }, manage: {}, diagnostics: {} };
   for (const descriptor of descriptors) {
     const registered = context.typert.local.get(`${descriptor.namespace}/${descriptor.method}`);
     assert.equal(registered?.id, descriptor.id, `${descriptor.method} must register`);

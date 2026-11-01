@@ -183,6 +183,48 @@ try {
   assert.equal(commands.length, 3, "all uploads must use DOM.setFileInputFiles rather than base64 payloads");
   for (const command of commands) assert.deepEqual(command.files, [file]);
   bridge.request = request;
+  await page.evaluate(() => {
+    const source = document.createElement("button"); source.id = "drag-source"; source.draggable = true; source.textContent = "Drag source";
+    source.ondragstart = event => event.dataTransfer.setData("text/plain", "moved");
+    const zone = document.createElement("div"); zone.id = "drop-zone"; zone.textContent = "Drop target"; zone.style.cssText = "padding:30px;border:1px solid";
+    zone.ondragover = event => event.preventDefault();
+    zone.ondrop = async event => {
+      event.preventDefault(); zone.dataset.drops = String(+(zone.dataset.drops || 0) + 1);
+      zone.dataset.text = event.dataTransfer.getData("text/plain");
+      if (event.dataTransfer.files.length) zone.dataset.file = await event.dataTransfer.files[0].text();
+    };
+    document.querySelector("main").append(source, zone);
+  });
+  const dragRead = await engine.read(tab.ref);
+  const drag = await engine.act(tab.ref, { snapshot: dragRead.snapshot, observe: "handle", steps: [
+    { op: "drag", selector: "#drag-source", toSelector: "#drop-zone" },
+  ] });
+  assert.equal(drag.completed.length, 1, JSON.stringify(drag));
+  assert.equal(await page.locator("#drop-zone").getAttribute("data-text"), "moved");
+  const drop = await engine.act(tab.ref, { snapshot: drag.snapshot, observe: "summary", steps: [
+    { op: "drop", selector: "#drop-zone", files: [file], data: { "text/plain": "external data" } },
+  ] });
+  assert.equal(drop.completed.length, 1, JSON.stringify(drop));
+  assert.equal(await page.locator("#drop-zone").getAttribute("data-text"), "external data");
+  await page.waitForFunction(() => document.querySelector("#drop-zone").dataset.file === "local fixture only");
+  assert.equal(await page.locator("#drop-zone").getAttribute("data-drops"), "2", "neither action replays a drop");
+  assert.equal((await engine.network(tab.ref)).capturing, false);
+  const networkStart = await engine.network(tab.ref, { action: "start" }); assert.ok(networkStart.capturingSince);
+  const capturedPage = await bridge.page(tab.ref);
+  const capturedResponse = capturedPage.waitForResponse(response => response.url().includes("/api/test?"));
+  await page.evaluate(async () => { await fetch("/api/test?token=private", { method: "POST", body: "private input", headers: { "X-Private": "private" } }); });
+  await capturedResponse;
+  const network = await engine.network(tab.ref, { query: "/api/test" });
+  assert.equal(network.requests.length, 1); assert.equal(network.requests[0].status, 200);
+  const networkDetail = await engine.network(tab.ref, { action: "details", requestId: network.requests[0].id });
+  assert.equal(networkDetail.request.method, "POST"); assert.equal(JSON.stringify(networkDetail).includes("private"), false);
+  assert.equal((await engine.network(tab.ref, { action: "stop" })).capturing, false);
+  const diagnostic = bridge.diagnostics.state();
+  const responseEvent = diagnostic.events.findLast(event => event.phase === "host_response");
+  const phases = diagnostic.events.filter(event => event.correlationId === responseEvent.correlationId).map(event => event.phase);
+  for (const phase of ["host_send", "extension_receive", "api_settle", "extension_response", "host_response"]) assert.ok(phases.includes(phase), `diagnostic stage ${phase}`);
+  assert.equal(JSON.stringify(diagnostic).includes("private"), false, "diagnostics never store request/query/body content");
+  console.log("PASS: same-page element drag, authorized local file and MIME drop, opt-in redacted network capture through the existing extension relay.");
   const softRead = await engine.read(tab.ref);
   const soft = await engine.act(tab.ref, { snapshot: softRead.snapshot, observe: "summary", steps: [
     { op: "click", selector: "#soft" }, { op: "extract", selector: "#out" },

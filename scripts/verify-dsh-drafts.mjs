@@ -43,7 +43,9 @@ export async function verifyDraftInput(bundle, root) {
     });
     assert.equal(result.first, true); assert.equal(result.second, true);
     assert.match(result.draft, /^Use @\[Test page\].*First note.*Second note/s);
-    assert.equal(result.references.length, 1); assert.equal(result.references[0].ref, "dsh-browser://test/1");
+    assert.equal(result.references.length, 3); assert.equal(result.references[0].ref, "dsh-browser://test/1");
+    assert.equal(result.references[1].source, "doyourweb-context");
+    assert.match(result.references[1].ref, /First note/);
     assert.equal(result.attachments[0], "existing-image"); assert.equal(result.attachments.length, 2);
     assert.equal(result.submissions, 0);
     console.log("PASS: installed DSH editor accumulates annotation drafts and images, preserves reference chips and attachments, and does not auto-submit.");

@@ -49,9 +49,9 @@ test("Remote descriptors carry strict codecs the DSH client gateway mounts", () 
   const strict = codec => codec.mode === "strict" && typeof codec.typeSymbol === "string"
     && codec.typeSymbol.length > 0 && typeof codec.create === "function"
     && typeof codec.create().parse === "function";
-  assert.equal(descriptors.length, 6);
+  assert.equal(descriptors.length, 7);
   for (const descriptor of descriptors) {
-    assert.match(descriptor.id, /^dsh-doyourweb#browserTabs\/(list|setup|focus|apps|annotationSession|manage)$/);
+    assert.match(descriptor.id, /^dsh-doyourweb#browserTabs\/(list|setup|focus|apps|annotationSession|manage|diagnostics)$/);
     assert.equal(descriptor.invocation.kind, "direct");
     assert.deepEqual(descriptor.cancellation, { parameter: "signal" });
     assert.ok(strict(descriptor.result), `${descriptor.method} result needs a strict codec`);

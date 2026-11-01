@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.1.7` adds authorized local-file uploads, compact snapshot handles, a browser stop HUD, optional main-content reads and a reusable Windows helper. It retains chat-draft annotations, `@` application references and MCP-first app control. See [optimization decisions and usage](docs/architecture-optimization.md#english) and [annotations and app control](docs/annotations-and-apps.md#english).
+Version `0.1.8` adds a native browser sidebar, compact context chips, local diagnostics, element drag/file drop and opt-in network metadata. The annotation toolbar now collapses or docks at the page edge while preserving your draft. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -13,9 +13,9 @@ English | [简体中文](README.zh-CN.md)
 
 [Local Demo](#local-demo) · [Quick Start](#quick-start) · [Usage](#usage)
 
-![Local browser extension pairing page](docs/setup-page.png)
+![Current browser sidebar component](docs/browser-panel.png)
 
-*The local pairing page connects your browser extension to the DSH plugin.*
+*Current browser panel rendered with the installed DSH React and UI primitives, using sample tabs. This is a component preview, not a full DSH host screenshot.*
 
 ---
 
@@ -25,15 +25,21 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.1.7** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.1.8** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
 1. Use `/browser` to open the connection page and locate the extension folder.
 2. Load the extension in Chrome or Edge, then approve its matching four-digit pairing code.
-3. Select an existing page with `@` and describe the task in DSH.
+3. Open **Browser** from the left navigation, or use `@`, to add an existing page to the current chat draft. Send the draft when ready.
 
-The screenshot above shows the pairing interface, not a recorded automation run.
+![Current page annotation toolbar](docs/annotation-toolbar.png)
+
+The real annotation toolbar rendered on a local test page. Collapse keeps the toolbar visible; dock leaves a small edge button and preserves the draft and position.
+
+![Local browser extension pairing page](docs/setup-page.png)
+
+The real local connection page rendered with a sample pairing request. These previews are not an automation recording.
 
 <a id="local-demo"></a>
 
@@ -47,11 +53,16 @@ There is no public hosted demo. After the DSH plugin starts, its default local c
 | --- | --- |
 | Existing tabs | Reuses regular HTTP/HTTPS and authorized local file:// tabs and their login state in Chrome and Edge. |
 | Native references | Lists page titles, sites and icons through DSH's `@` and `/` menus. |
+| Browser sidebar | Native left navigation opens a session-owned right panel for pages, running apps and local diagnostics. Picks append references to the current draft without sending. |
+| Compact context | Page/app context, annotations and manually referenced logs appear as expandable chips; their serialized model context is preserved. |
 | Compact reading | Accessibility snapshots support selector/query narrowing and cursor pagination. Initial reference context shares a default 2,400-character budget. |
 | Batched actions | Runs up to 12 typed actions per call, including uploads; stops on failure/document navigation. Query/hash routes only continue observations or target-free steps. |
 | Result extraction | Returns selected `text`, `value` and `href` fields, with up to 20 rows per extraction. |
 | Short receipts | `summary` skips the next snapshot; `handle` returns a fresh ID/cursor without text. Read its cursor before using element refs; known selectors may continue. |
 | File uploads | Hidden inputs, custom choosers and iframe selectors; requires a selected tab and exact user-supplied absolute file paths. |
+| Drag and drop | Drag between elements in the same frame, or drop authorized local files and MIME data onto an element. |
+| Network metadata | Explicit start/stop capture, 200-entry capacity, filtered pages of 10 (up to 20). No query strings, credentials, headers or bodies. |
+| Local diagnostics | Bounded in-memory command stages, duration and error codes; disable, clear, export or explicitly add logs to the draft. |
 | Browser stop | Input displays private stop controls and a brief target highlight; cancellation stops later steps and reports uncertain effects. |
 | Screenshots | Saves PNG files locally and returns their paths instead of embedding base64. |
 | Background connection | Saves pairing settings, reconnects automatically, and releases idle debugger connections. |
@@ -165,6 +176,8 @@ The data directory is `<DSH_HOME>/browser-tabs/`, or `~/.dsh/browser-tabs/` when
 
 ### Usage
 
+The left navigation's **浏览器** button opens the native right panel with pages, apps and diagnostics. Clicking an item inserts a reference into the current draft; it does not send it. The `@` menu remains available. Page/app context, annotations and explicitly referenced logs display as compact expandable chips while preserving their full model payload. Diagnostics stay in local memory (600 metadata entries), can be paused, cleared or exported, and only enter a draft when you choose to reference them. The annotation toolbar can collapse its editor or park at the page edge; parking stops picking and keeps the unfinished note and position for restoration.
+
 After referencing a page, you can ask:
 
 > Read the result list on this page and collect its titles and links. Do not submit any forms.
@@ -172,9 +185,11 @@ After referencing a page, you can ask:
 | Model tool | Use |
 | --- | --- |
 | `browser_read` | Default `mode: "auto"` discovers WebMCP tools first, otherwise returns a DOM snapshot. Use `mode: "dom"` when site tools do not cover the task; narrow with `selector`, `query` or `depth`. `cursor` paginates DOM content; `limit` accepts 400-8,000 characters. |
-| `browser_act` | Use the latest snapshot ID to click, fill, press, select, check, hover, scroll, navigate, go back/forward, wait, extract or upload. |
+| `browser_act` | Use the latest snapshot ID to click, fill, press, select, check, hover, scroll, navigate, go back/forward, wait, extract, upload, drag or drop. `drag` uses source `ref`/`selector` and destination `toRef`/`toSelector` in the same frame. `drop` accepts user-authorized local `files` and/or MIME `data`. |
 | `browser_upload` | Upload 1-20 user-specified absolute local file paths through a file input or chooser button, with optional iframe selector `frame`. Requires a current snapshot. Files may upload immediately. |
 | `browser_capture` | Save a screenshot when visual inspection is needed. |
+| `browser_network_requests` | Explicitly start, filter/list, inspect details, clear or stop network metadata capture. |
+| `browser_network_requests` | Explicit `action:start` captures up to 200 request metadata entries in memory. `list` supports `query`, `errorsOnly`, `includeStatic`, `afterId` and `limit` (max 20). `details` with `requestId` adds timing/MIME metadata; `clear` clears entries and `stop` removes listeners. No prior requests, URL credentials/query/fragment, headers or bodies are recorded. Idle detach discards the capture. |
 | `browser_webmcp_list` | Discover or narrow page tools with `query`; reuse an existing catalog while it remains valid. |
 | `browser_webmcp_call` | Call a matching page tool using `catalog`, `name` and `arguments`; success returns `nextCatalog` for another call. |
 

@@ -95,6 +95,8 @@ const invocations = [
     result: result("browserTabs/annotationSession", { ok: "boolean", drafts: "array" }) },
   { method: "manage", parameters: request("browserTabs/manage", {}),
     result: result("browserTabs/manage", { url: "string" }) },
+  { method: "diagnostics", parameters: request("browserTabs/diagnostics", { clear: "boolean", enabled: "boolean" }),
+    result: result("browserTabs/diagnostics", { enabled: "boolean", capacity: "number", events: "array", version: "string" }) },
 ];
 
 export const descriptors = invocations.map(({ method, parameters, result: codec }) => ({

@@ -2,6 +2,7 @@ import { createElement, useEffect, useState } from "react";
 import { IconGlobeOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import { apply as registerSources } from "./client.js";
 import { appendAnnotationDraft } from "./annotation-drafts.js";
+import { registerBrowserPanel } from "./browser-panel.js";
 
 export { inject } from "./client.js";
 
@@ -36,6 +37,7 @@ export function apply(ctx) {
     tabIcon: tab => props => createElement(TabIcon, { ...props, favicon: tab.favicon }),
     appIcon: AppIcon, applicationIcon: app => props => createElement(AppIcon, { ...props, icon: app.icon }),
   });
+  registerBrowserPanel(ctx);
   const client = crypto.randomUUID(); let revision = 0;
   const delivered = new Map(), acknowledgements = new Map(), busy = new Set();
   ctx.inject?.(["slots", "sessions"], scope => {

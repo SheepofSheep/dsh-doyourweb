@@ -12,6 +12,7 @@ test("handle receipt cannot silently rebind old element refs; cursor admits fres
   const handle = await engine.act("tab", { snapshot: initial.snapshot, observe: "handle", steps: [{ op: "click", ref: "e2" }] });
   assert.equal(handle.content, undefined); assert.equal(handle.refs, "read_required");
   await assert.rejects(engine.act("tab", { snapshot: handle.snapshot, steps: [{ op: "click", ref: "e2" }] }), /withheld/);
+  await assert.rejects(engine.act("tab", { snapshot: handle.snapshot, steps: [{ op: "drag", selector: "button", toRef: "e2" }] }), /withheld/);
   await assert.rejects(engine.act("tab", { snapshot: initial.snapshot, steps: [{ op: "click", selector: "button" }] }), /stale/);
   assert.deepEqual(calls, ["aria-ref=e2"]);
   const fresh = await engine.read("tab", { cursor: handle.cursor });
@@ -44,6 +45,24 @@ test("invalid upload paths stop the entire batch before preceding effects", asyn
   const read = await engine.read("tab");
   await assert.rejects(engine.act("tab", { snapshot: read.snapshot, steps: [{ op: "click", ref: "e1" }, { op: "upload", selector: "input", files: ["relative.txt"] }] }), /absolute/);
   assert.deepEqual(actions, []);
+  await assert.rejects(engine.act("tab", { snapshot: read.snapshot, steps: [{ op: "click", ref: "e1" }, { op: "drop", selector: "#drop", files: ["relative.txt"] }] }), /absolute/);
+  assert.deepEqual(actions, []);
+});
+
+test("failed drag and drop stop once and expose uncertain effects without replay", async () => {
+  for (const op of ["drag", "drop"]) {
+    let attempts = 0;
+    const page = { evaluate: async () => ({ url: "https://example.com", epoch: 1 }), title: async () => "Drop",
+      locator: () => ({ ariaSnapshot: async () => "- button [ref=e1]", dragTo: async () => { attempts++; throw new Error("disconnected after dispatch"); },
+        drop: async () => { attempts++; throw new Error("disconnected after dispatch"); } }) };
+    const engine = new BrowserEngine({ page: async () => page });
+    const read = await engine.read("tab");
+    const result = await engine.act("tab", { snapshot: read.snapshot, observe: "summary", steps: [
+      { op, selector: "#source", toSelector: "#target", data: { "text/plain": "test" } }, { op: "click", ref: "e1" },
+    ] });
+    assert.equal(attempts, 1); assert.equal(result.uncertainStep, 0); assert.equal(result.mayHaveLateEffects, true);
+    assert.equal(result.completed.length, 0); assert.equal(result.remaining, 2);
+  }
 });
 
 test("Windows helper reuses loaded types and restarts after cancellation", { skip: process.platform !== "win32" }, async () => {

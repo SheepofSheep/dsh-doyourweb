@@ -4,6 +4,7 @@ lib/
 
 # Local reference checkouts, test output, and package archives
 .local/
+.tmp/
 .serena/
 coverage/
 captures/

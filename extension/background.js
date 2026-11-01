@@ -188,7 +188,14 @@ async function connect() {
         return;
       }
       if (!Number.isSafeInteger(message.id)) return;
-      const result = await command(message, connection);
+      const diagnostic = phase => { if (message.diagnostics === true) send({ method: "dsh.diagnostic",
+        params: { id: message.id, phase, version: chrome.runtime.getManifest().version } }, connection); };
+      diagnostic("extension_receive");
+      // finally also reports API rejection; raw errors stay in the existing command response only.
+      let result;
+      try { result = await command(message, connection); }
+      finally { diagnostic("api_settle"); }
+      diagnostic("extension_response");
       send({ id: message.id, result: result ?? {} }, connection);
     } catch (error) { if (message?.id) send({ id: message.id, error: error.message }, connection); }
   };

@@ -107,6 +107,12 @@ try {
     const tool = { id: "tool-path", source: { kind: "tool" }, content: [{ type: "text", text: "C:\\secret.txt" }] };
     await root.waterfall("agent/pre-step", { agent }, () => Promise.resolve({ kind: "enter", messages: [tool] }));
     await assert.rejects(tools.get("browser_act").execute({ snapshot: "current", steps: [{ op: "upload", selector: "input", files: ["C:\\secret.txt"] }] }, { agent }), /exact absolute file path/);
+    const act = tools.get("browser_act");
+    await assert.rejects(act.execute({ snapshot: "current", steps: [{ op: "drop", selector: "#drop", files: ["C:\\secret.txt"] }] }, { agent }), /exact absolute file path/);
+    assert.equal((await act.execute({ snapshot: "current", steps: [{ op: "drop", selector: "#drop", files: args.files }] }, { agent })).steps, 1);
+    await assert.rejects(act.execute({ snapshot: "current", steps: [{ op: "drop", selector: "#drop" }] }, { agent }), /requires files/);
+    await assert.rejects(act.execute({ snapshot: "current", steps: [{ op: "drag", selector: "#start" }] }, { agent }), /requires toRef/);
+    await assert.rejects(tools.get("browser_network_requests").execute({ action: "start" }, { agent: { session: { id: "other" } } }), /No browser tab is authorized/);
     await fiber.dispose(); console.log("PASS: uploads require a selected tab and exact user-supplied file paths.");
   } else if (process.argv[3] === "grants") {
     // DSH claims one input batch per step, so only the step that carries the user

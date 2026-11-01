@@ -14,7 +14,12 @@ export function appendAnnotationDraft(conversation, request) {
     if (ids.length && !shell.actions.addAttachments(ids)) return false;
     // Reference chips occupy one detect-coordinate character, even when their clipboard text is long.
     const end = shell.projection.detectText.length;
-    if (!shell.actions.insertText(`${end ? "\n\n" : ""}${text}\n`, { start: end, end, draftRev: state.draftRev })) {
+    const wrapped = `<doyourweb_annotation>\n${text}\n</doyourweb_annotation>`;
+    const span = { start: end, end, draftRev: state.draftRev };
+    const inserted = shell.insertReference
+      ? shell.insertReference({ source: "doyourweb-context", ref: wrapped, label: "页面批注", appearance: "file", clipboardText: wrapped }, span)
+      : shell.actions.insertText(`${end ? "\n\n" : ""}${text}\n`, span);
+    if (!inserted) {
       for (const id of ids) shell.actions.removeAttachment(id);
       return false;
     }
