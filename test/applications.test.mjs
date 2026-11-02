@@ -289,6 +289,58 @@ test("desktop defaults to bounded text-only reads and stops identical read-only 
   assert.notEqual(fresh.snapshot, first.snapshot); assert.equal(calls.length, 2);
 });
 
+test("desktop shows a window once per connection and keeps subsequent reads in the background", async t => {
+  const { service, app, exec, calls, row } = await desktopFixture(t);
+  let shown = 0, scans = 0;
+  service.inventory.showWindow = async () => { shown++; return true; };
+  service.inventory.inventory = async () => { scans++; return [row]; };
+  const first = await service.desktop(app.ref, {}, exec);
+  assert.equal(shown, 1); assert.equal(scans, 2);
+  scans = 0;
+  const cached = await service.desktop(app.ref, {}, exec);
+  assert.equal(cached.cached, true); assert.equal(shown, 1); assert.equal(scans, 1);
+  assert.equal((await service.desktop(app.ref, {}, exec)).status, "no_progress");
+  await service.desktop(app.ref, { tool: "controls", snapshot: first.snapshot }, exec);
+  await service.desktop(app.ref, { tool: "capabilities" }, exec);
+  const refreshed = await service.desktop(app.ref, { refresh: true }, exec);
+  await service.desktop(app.ref, { tool: "click", snapshot: refreshed.snapshot }, exec);
+  await service.desktop(app.ref, {}, exec);
+  assert.equal(shown, 1, "consuming a snapshot does not reset window presentation");
+  const reads = calls.filter(call => call.name === "get_window_state").length;
+  const explicit = await service.desktop(app.ref, { foreground: true }, exec);
+  assert.equal(shown, 2); assert.notEqual(explicit.snapshot, refreshed.snapshot);
+  assert.equal(calls.filter(call => call.name === "get_window_state").length, reads + 1);
+});
+
+test("desktop honors background reads and presents restored or replacement windows with a fresh snapshot", async t => {
+  const { service, app, exec, calls, row } = await desktopFixture(t);
+  let shown = 0;
+  service.inventory.showWindow = async () => { shown++; row.minimized = false; row.inputX = 10; return true; };
+  await service.desktop(app.ref, { foreground: false }, exec);
+  assert.equal(shown, 0);
+  const visible = await service.desktop(app.ref, {}, exec);
+  assert.equal(shown, 1);
+  row.minimized = true; row.inputX = -32000;
+  const restored = await service.desktop(app.ref, {}, exec);
+  assert.equal(shown, 2); assert.equal(restored.geometry.minimized, false);
+  assert.notEqual(restored.snapshot, visible.snapshot); assert.equal(calls.length, 3);
+  const focused = await service.desktop(app.ref, { tool: "focus_window", foreground: false }, exec);
+  assert.equal(shown, 3); assert.notEqual(focused.snapshot, restored.snapshot);
+  row.pid = 43; row.windowId = "456"; row.started = "2";
+  const replacement = await service.desktop(app.ref, {}, exec);
+  assert.equal(shown, 4); assert.notEqual(replacement.snapshot, focused.snapshot);
+  assert.equal(calls.at(-1).args.window_id, 456);
+});
+
+test("failed best-effort presentation still bounds unchanged polling", async t => {
+  const { service, app, exec, calls } = await desktopFixture(t);
+  service.inventory.showWindow = async () => false;
+  await service.desktop(app.ref, {}, exec);
+  assert.equal((await service.desktop(app.ref, {}, exec)).cached, true);
+  assert.equal((await service.desktop(app.ref, {}, exec)).status, "no_progress");
+  assert.equal(calls.length, 1);
+});
+
 test("desktop control pages and exact-name actions reuse the same driver snapshot", async t => {
   const data = { snapshot_id: "s0000000d", elements: [{ element_index: 13, element_token: "s0000000d:13", role: "ComboBox", label: "搜索商店" }] };
   const { service, app, exec, calls, tools } = await desktopFixture(t, async () => ({ structuredContent: data, content: [] }));
@@ -308,6 +360,7 @@ test("background refusal preserves an unconsumed snapshot without an uncertainty
   const state = await service.desktop(app.ref, {}, exec);
   const result = await service.desktop(app.ref, { tool: "click", snapshot: state.snapshot }, exec);
   assert.equal(result.status, "action_refused"); assert.equal(result.input_dispatched, false);
+  assert.equal(result.failed_step, 1); assert.equal(result.retryable, false);
   assert.equal(result.snapshot, state.snapshot); assert.equal(service.receipts.has(app.ref), false);
   await service.desktop(app.ref, { tool: "controls", snapshot: result.snapshot }, exec);
   assert.equal(calls.length, 2, "paging a refusal does not trigger another UIA read");
@@ -426,6 +479,8 @@ test("a desktop batch validates all steps first and never replays a partially fa
   connection.transport.validate = () => {}; fail = true;
   const stopped = await service.desktop(app.ref, batch, exec);
   assert.equal(stopped.status, "action_failed"); assert.equal(stopped.stop, true); assert.equal(stopped.completed, 1);
+  assert.equal(stopped.failed_step, 2); assert.equal(stopped.retryable, false);
+  assert.deepEqual(stopped.result, stopped.steps[1].result, "existing failure result remains available");
   assert.deepEqual(calls.slice(before).map(call => call.name), ["click", "drag"]);
   await assert.rejects(service.desktop(app.ref, batch, exec), /uncertain effects/);
 });

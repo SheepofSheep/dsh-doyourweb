@@ -40,6 +40,25 @@ test("large trees keep usable structured handles independently of text truncatio
   assert.equal(next.controls[0].element_index, result.state.next_offset);
 });
 
+test("JSON-only driver trees are projected once and leave room for distinct commentary", async () => {
+  const result = await projectMcpResult({ content: [
+    { type: "text", text: JSON.stringify(state, null, 2) },
+    { type: "text", text: "Inspection complete." },
+  ] }, "unused", 2400);
+  assert.deepEqual(result.content, [{ type: "text", text: "Inspection complete." }]);
+  assert.equal(result.state.controls[0].element_token, "s0000000d:0");
+  assert.ok(result.state.next_offset > 0 && result.state.next_offset < state.elements.length);
+  assert.equal(controlPage(state, result.state.next_offset, 2400).controls[0].element_index, result.state.next_offset);
+  assert.ok(JSON.stringify(result).length < 2400);
+});
+
+test("driver action evidence and delivery remain available for failed input", async () => {
+  const action = { effect: "partial", route: "synthetic_events", delivery: { delivered_count: 1 }, evidence: { changed: false }, escalation: { reason: "background_unavailable" } };
+  const result = await projectMcpResult({ isError: true, structuredContent: action, content: [] }, "unused");
+  assert.deepEqual(result.action, action);
+  assert.equal(result.isError, true);
+});
+
 test("stable element lookup and numeric indices use the actual driver snapshot", () => {
   const args = resolveElement({ element: { role: "Button", name: "Button 13" } }, state, {});
   assert.equal(args.element_token, "s0000000d:13");

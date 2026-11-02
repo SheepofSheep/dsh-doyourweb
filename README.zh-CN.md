@@ -4,7 +4,7 @@
 
 让 DeepSeek Harness 引用并操作你已经打开、保持登录的 Chrome 和 Edge 页面，用精简的页面上下文和批量操作减少重复读取。
 
-`0.1.8` 新增原生浏览器侧栏、可展开的上下文引用、本地诊断日志、元素拖拽/文件投放和按需网络元数据。批注浮窗支持收起与页面边缘收纳，保留未完成草稿和原位置。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
+`0.1.9` 减少桌面读取时的反复窗口激活，去除 JSON 控件树的重复输出，并在动作失败时保留驱动证据与停止步骤。上述行为已通过自动化测试和 stdio MCP fixture 验证；本机未测量真实 Cua 应用的兼容性和耗时。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -27,7 +27,7 @@
 
 项目由 DSH 插件和配套的 Manifest V3 浏览器扩展组成。插件接入原生 `@`、`/` 菜单，扩展提供标签页信息和控制通道。完成一次配对后，扩展会在后台重连，不必一直打开弹窗。
 
-当前版本为 **0.1.8**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
+当前版本为 **0.1.9**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
 
 ## 02 · 功能预览
 
@@ -144,7 +144,7 @@ dsh-doyourweb
 ### 构建并安装本地版本
 
 ```sh
-git clone --branch ver0.1.7 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.1.9 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build

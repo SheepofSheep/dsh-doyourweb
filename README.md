@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.1.8` adds a native browser sidebar, compact context chips, local diagnostics, element drag/file drop and opt-in network metadata. The annotation toolbar now collapses or docks at the page edge while preserving your draft. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
+Version `0.1.9` avoids repeatedly presenting the desktop window during inspection, projects JSON-only control trees once and preserves failed-action evidence with the stopped step. These behaviors are covered by automated tests and a stdio MCP fixture; native Cua application compatibility and timing have not been measured on this machine. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,7 +25,7 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.1.8** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.1.9** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
@@ -141,7 +141,7 @@ This requires a published package. If the registry returns `404`, use the local 
 ### Build and Install Locally
 
 ```sh
-git clone --branch ver0.1.7 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.1.9 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build

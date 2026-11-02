@@ -242,16 +242,22 @@ export class Applications {
       const paging = options.tool === "controls";
       const wantsRead = !options.steps && (!options.tool || reads.has(options.tool) || focusing || paging || options.tool === "capabilities");
       let app = wantsRead ? await this.inventory.ensureWindow(ref, execution.signal) : await this.inventory.resolve(ref, execution.signal, { fresh: true });
-      if (wantsRead && !paging && options.tool !== "capabilities" && (focusing || options.foreground !== false)) {
-        await this.inventory.showWindow?.(ref, execution.signal).catch(() => {});
-        app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
-      }
       let c = [...this.connections.values()].find(value => value.app === ref && value.session === execution.session && value.candidate.id === "cua-driver");
       if (!c) {
         await this.inventory.resolve(ref, execution.signal, { fresh: true });
         const connected = await this.connect(ref, "cua-driver", execution);
         if (connected.status !== "connected") return connected;
         c = this.getConnection(connected.connection, ref, execution.session);
+        app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
+      }
+      const window = `${app.pid}:${app.windowId}:${app.started}`;
+      const presenting = wantsRead && !paging && options.tool !== "capabilities" && (focusing || (options.foreground !== false
+        && (options.foreground === true || c.presentedWindow !== window || geometry(app).minimized)));
+      let presented = false;
+      if (presenting) {
+        // Present a selected window once; later reads (including cached ones) must not steal focus.
+        const shown = await this.inventory.showWindow?.(ref, execution.signal).catch(() => false);
+        if (shown) { c.presentedWindow = window; presented = true; }
         app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
       }
       const key = `${execution.session}:${ref}`, snapshot = this.snapshots.get(key);
@@ -295,7 +301,7 @@ export class Applications {
       if (!reading && (!snapshot || snapshot.id !== options.snapshot || snapshot.window !== `${app.pid}:${app.windowId}:${app.started}` || Date.now() - snapshot.time > 90000)) throw new Error("Read this app window first and pass its fresh desktop snapshot id");
       if (!reading && prepared.some(step => ["x", "y", "from_x", "from_y", "to_x", "to_y"].some(name => step.args[name] !== undefined)) && !snapshot.visual) throw new Error("Pixel mouse input needs a visual snapshot: call app_desktop with screenshot:true once, then use its snapshot id");
       const readKey = reading ? JSON.stringify(prepared[0]) : undefined;
-      if (reading && !focusing && !options.refresh && snapshot?.readKey === readKey) {
+      if (reading && !focusing && !presented && !options.refresh && snapshot?.window === `${app.pid}:${app.windowId}:${app.started}` && snapshot.readKey === readKey) {
         if (snapshot.repeats >= 2) return { app: ref, status: "no_progress", stop: true, retryable: false, message: "Repeated inspection without an action. Stop polling/screenshots; finish the task or ask the user what changed." };
         if (Date.now() - snapshot.time < 3000) { snapshot.repeats++; return { ...snapshot.response, cached: true, unchanged: true }; }
       }
@@ -332,7 +338,7 @@ export class Applications {
           if (reading) {
             if (raw.isError) { this.invalidateSnapshots(ref); return { app: ref, status: "read_failed", stop: true, retryable: false, result, message: "Window inspection failed. Do not keep searching or taking screenshots; use a background connector or inspect the automatic launch with computer use." }; }
             const signature = createHash("sha256").update(JSON.stringify(raw)).digest("hex");
-            const repeats = !options.refresh && snapshot?.readKey === readKey && snapshot.signature === signature ? snapshot.repeats + 1 : 1;
+            const repeats = !presented && !options.refresh && snapshot?.window === `${app.pid}:${app.windowId}:${app.started}` && snapshot.readKey === readKey && snapshot.signature === signature ? snapshot.repeats + 1 : 1;
             if (repeats >= 3 && !focusing) {
               snapshot.repeats = repeats;
               this.invalidateSnapshots(ref);
@@ -341,7 +347,7 @@ export class Applications {
             const data = driverData(raw), bounds = geometry(app, data);
             const response = { app: ref, snapshot: randomUUID(), snapshot_id: data.snapshot_id ?? null, geometry: bounds, result,
               ...(Array.isArray(data.elements) && data.elements.length < 3 ? { accessibility_hint: "Sparse accessibility tree: use screenshot:true for visual targeting. CEF apps may need an app-supported --force-renderer-accessibility launch option and restart; do not restart or enable a debugging port without user approval." } : {}),
-              next: "Use result.state.controls; controls+offset pages the SAME snapshot without another UIA read. snapshot is the plugin UUID; snapshot_id is the driver's handle. element:{role,name} is an exact unique lookup. Use app_type for text plus Enter/Tab/Esc. Stop when done." };
+              next: "Target result.state.controls by token/index or exact element:{role,name}. controls+offset uses next_offset to page this snapshot without a UIA read. snapshot is the plugin UUID; snapshot_id is the driver handle. app_type handles text/keys. Stop when done." };
             this.snapshots.set(key, { id: response.snapshot, window: `${app.pid}:${app.windowId}:${app.started}`, time: Date.now(), readKey, signature, repeats, response, data, geometry: bounds, inventoryGeometry: geometry(app), visual: result.content.some(block => block.type === "image") });
             if (this.snapshots.size > 200) this.snapshots.delete(this.snapshots.keys().next().value);
             this.receipts.delete(ref); return response;
@@ -352,7 +358,8 @@ export class Applications {
             const stale = /element_token is stale|snapshot_id is stale/.test(JSON.stringify(raw));
             if (refused && results.length === 1) { if (!stale) this.snapshots.set(key, snapshot); this.receipts.delete(ref); }
             else this.receipts.set(ref, { kind: "desktop", tool, mayHaveEffects: !refused || results.length > 1 });
-            return { app: ref, status: refused ? "action_refused" : "action_failed", stop: true, completed: results.length - 1, result, steps: results, coordinates,
+            return { app: ref, status: refused ? "action_refused" : "action_failed", stop: true, retryable: false, completed: results.length - 1, failed_step: results.length,
+              result, steps: results, coordinates,
               ...(refused && results.length === 1 ? { ...(!stale ? { snapshot: snapshot.id } : {}), input_dispatched: false } : {}), lastAction: this.receipts.get(ref),
               next: stale ? "Driver snapshot was replaced. Read this window once for fresh handles; no input was sent by this step. Do not replay earlier completed steps." : refused ? "No input was sent by this step. For background_unavailable, use foreground:true with approval, or a matching MCP. Do not replay earlier completed steps." : "Batch stopped. Do not replay completed or uncertain inputs; inspect once before changing approach." };
           }
