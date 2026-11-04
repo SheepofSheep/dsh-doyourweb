@@ -1,6 +1,6 @@
 {
   "name": "dsh-doyourweb",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Browser tabs, element annotations and MCP/CLI-first desktop app control for DeepSeek Harness",
   "type": "module",
   "license": "MIT",

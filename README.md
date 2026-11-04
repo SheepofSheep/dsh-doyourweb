@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.2.1` fixes empty application lists on Windows when a protected process has unreadable identity metadata. The sidebar and `@` menu continue listing other running application windows. Browser actions retain execution evidence after failures, can narrow their post-action snapshot with `observation`, and optionally check one final `expect` condition. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
+Version `0.2.2` refreshes open `@` / `/` browser candidates and the webpage sidebar when the companion extension connects, disconnects or changes tabs, without requiring a different search query. It also fixes empty application lists on Windows when a protected process has unreadable identity metadata. The sidebar and `@` menu continue listing other running application windows. Browser actions retain execution evidence after failures, can narrow their post-action snapshot with `observation`, and optionally check one final `expect` condition. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,7 +25,7 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.2.1** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.2.2** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
@@ -142,7 +142,7 @@ This requires a published package. If the registry returns `404`, use the local 
 ### Build and Install Locally
 
 ```sh
-git clone --branch ver0.2.1 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.2 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build

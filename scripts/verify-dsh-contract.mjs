@@ -34,6 +34,8 @@ import { PACKAGE, descriptors, hostContribution, remoteContribution } from "../s
 import { compactReferences } from "../src/reference-folders.js";
 import { balanceFileReferences } from "../src/file-references.js";
 import { verifyDraftInput } from "./verify-dsh-drafts.mjs";
+import { BrowserBridge } from "../src/bridge.js";
+import { WebSocket } from "ws";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const argument = name => {
@@ -182,8 +184,9 @@ async function verifyBuiltClient(gatewayBundle, inputBundle) {
   const tab = { ref: "dsh-browser://profile/7", title: "Example", url: "https://example.com/page", browser: "Edge" };
   const calls = [];
   const draft = { sessionId: "verify", requestId: "verify-note", content: [{ type: "text", text: "Fix this button" }] };
+  let listTabs = () => ({ tabs: [tab], connected: true });
   const connection = fakeConnection(calls, (endpoint, args) => ({ ok: true,
-    value: endpoint === "browserTabs/list" ? { tabs: [tab], connected: true }
+    value: endpoint === "browserTabs/list" ? listTabs(args.request)
       : endpoint === "browserTabs/annotationSession" ? { ok: true, drafts: args.request.active ? [draft] : [] } : { ok: true } }));
   const context = new Context();
   context.provide("connection", connection);
@@ -241,8 +244,8 @@ async function verifyBuiltClient(gatewayBundle, inputBundle) {
   context.on("slash/input-insert-text", ({ text }) => {
     queueMicrotask(() => controller.track(text, text.length, guard, ++revision)); return true;
   });
-  const waitMenu = async predicate => {
-    for (let index = 0; index < 100; index++) {
+  const waitMenu = async (predicate, timeout = 500) => {
+    for (let index = 0; index < timeout / 5; index++) {
       const menu = controller.menu.getSnapshot();
       if (predicate(menu)) return menu;
       await new Promise(resolve => setTimeout(resolve, 5));
@@ -286,6 +289,42 @@ async function verifyBuiltClient(gatewayBundle, inputBundle) {
     assert.ok(slash.groups.every(group => group.status !== "pending"), "no slash group should remain a loading skeleton");
     controller.dismiss();
   }
+  // Hold the real DSH controller's @ query unchanged while an actual bridge
+  // WebSocket connects, disconnects and reconnects. This catches stale menus
+  // that a one-shot candidates() unit test cannot detect.
+  const bridge = new BrowserBridge({ home: path.join(output, "connection-bridge"), port: 0 });
+  let socket;
+  try {
+    await bridge.start();
+    listTabs = request => ({ tabs: bridge.list(request.query || ""), connected: bridge.profiles.size > 0 });
+    const browserRows = state => stateReadyItems(state, "browser-tabs");
+    controller.track("@", 1, guard, ++revision);
+    await waitMenu(state => browserRows(state)[0]?.description === "未连接");
+    const connect = async tabs => {
+      socket = new WebSocket(`ws://127.0.0.1:${bridge.port}/extension`, ["dsh-browser", bridge.settings.token],
+        { origin: `chrome-extension://${bridge.id}` });
+      await new Promise((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+      socket.send(JSON.stringify({ method: "dsh.inventory", params: {
+        profile: "connection-test", browserSession: "connection-test", browser: "Chrome", tabs,
+      } }));
+    };
+    await connect([]);
+    await waitMenu(state => browserRows(state)[0]?.description?.startsWith("无可用"), 2500);
+    socket.send(JSON.stringify({ method: "dsh.inventory", params: { profile: "connection-test", browserSession: "connection-test",
+      browser: "Chrome", tabs: [{ id: 7, title: "Connected fixture", url: "https://example.com" }] } }));
+    await waitMenu(state => browserRows(state)[0]?.name === "Connected fixture", 2500);
+    socket.close();
+    await waitMenu(state => browserRows(state)[0]?.description === "未连接", 2500);
+    await connect([{ id: 7, title: "Reconnected fixture", url: "https://example.com" }]);
+    await waitMenu(state => browserRows(state)[0]?.name === "Reconnected fixture", 2500);
+    assert.equal(controller.menu.getSnapshot().hit.query, "", "connection changes must not require typing another @ query");
+    controller.dismiss();
+    const stoppedAt = calls.filter(call => call.endpoint === "browserTabs/list").length;
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    assert.equal(calls.filter(call => call.endpoint === "browserTabs/list").length, stoppedAt,
+      "closing the menu stops inventory polling");
+    console.log("PASS: the real DSH @ controller follows bridge connection, empty inventory, disconnect and reconnect without query changes, then stops polling on close.");
+  } finally { controller.dismiss(); socket?.close(); await bridge.close(); }
   await fiber.dispose();
   assert.equal(nativeReference.candidates, originalCandidates, "unload restores the native reference source");
   await context.fiber.dispose();

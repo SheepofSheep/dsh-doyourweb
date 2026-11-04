@@ -36,11 +36,17 @@ export function CompactContext({ node, raw }) {
     h("span", null, node.data.label), h("small", null, `${text.length.toLocaleString()} 字符`), h(BrowserGlyph, { kind: "chevron", size: 12, className: "dyw-chevron" })), h("pre", null, text));
 }
 
-export function BrowserPanel({ service, conversation, sessionId }) {
+export function BrowserPanel({ service, conversation, sessionId, watchTabs }) {
   const [view, setView] = useState("tabs"), [query, setQuery] = useState(""), [items, setItems] = useState([]);
   const [logs, setLogs] = useState(null), [busy, setBusy] = useState(true), [notice, setNotice] = useState("");
   const [failed, setFailed] = useState(false);
   const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    if (view !== "tabs" || !watchTabs) return;
+    const controller = new AbortController();
+    watchTabs(() => setRefresh(value => value + 1), controller.signal);
+    return () => controller.abort();
+  }, [view, watchTabs]);
   useEffect(() => {
     const controller = new AbortController();
     setBusy(true); setNotice(""); setFailed(false); setItems([]); setLogs(null);
@@ -118,7 +124,7 @@ export function BrowserPanel({ service, conversation, sessionId }) {
     })().catch(() => setNotice("无法打开设置，请重试。")) }, view === "tabs" ? "连接设置" : "应用管理")));
 }
 
-export function registerBrowserPanel(ctx) {
+export function registerBrowserPanel(ctx, watchTabs) {
   ctx.effect(() => ctx.inputTriggers.registerSource({ trigger: "@", name: "doyourweb-context", candidates: async () => [],
     codec: { clipboardText: ref => ref, serialize: async ref => ref },
     openReference(session, { ref }) {
@@ -152,7 +158,7 @@ export function registerBrowserPanel(ctx) {
     scope.slots.inject("conversation.user.text.node", () => scope.slots.register({ name: "conversation.user.text.node", key: contextRule.id }, CompactContext));
     scope.effect(() => scope.sidebarRightTabs.register({ id, kind: id, priority: "extension", title: () => "浏览器" }));
     scope.slots.inject("sidebar.right.pane.tab", () => scope.slots.register({ name: "sidebar.right.pane.tab", key: id,
-      inject: sessionId => ({ sessionId, service, conversation: scope.get("conversation") }) }, BrowserPanel));
+      inject: sessionId => ({ sessionId, service, watchTabs, conversation: scope.get("conversation") }) }, BrowserPanel));
     scope.slots.inject("sidebar.right.pane.tab.title", () => scope.slots.register({ name: "sidebar.right.pane.tab.title", key: id }, () => h("span", null, "浏览器")));
     // A global navigation entry launches the session-owned native dock. The next frame
     // follows the Conversation's remount; its editor and right pane keep their own lifetimes.
@@ -165,7 +171,7 @@ export function registerBrowserPanel(ctx) {
         scope.layout.selectPanel(null);
         frame = requestAnimationFrame(() => scope.sidebarRight.openTab(id));
       }, []);
-      return current ? null : h(BrowserPanel, { service, conversation: scope.get("conversation") });
+      return current ? null : h(BrowserPanel, { service, watchTabs, conversation: scope.get("conversation") });
     }
     scope.slots.inject("main", () => scope.slots.register({ name: "main", key: id }, LaunchBrowser));
     scope.slots.inject("sidebar.panellist", () => scope.slots.register({ name: "sidebar.panellist", id, order: 25, label: "浏览器" }, IconGlobeOutlineRegular));

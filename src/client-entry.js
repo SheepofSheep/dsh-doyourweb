@@ -25,11 +25,11 @@ function AnnotationSession({ sessionId, publish }) {
 }
 
 export function apply(ctx) {
-  registerSources(ctx, { browserIcon: IconGlobeOutlineRegular,
+  const watchTabs = registerSources(ctx, { browserIcon: IconGlobeOutlineRegular,
     tabIcon: tab => props => createElement(TabIcon, { ...props, favicon: tab.favicon }),
     appIcon: AppIcon, applicationIcon: app => props => createElement(AppIcon, { ...props, icon: app.icon }),
   });
-  registerBrowserPanel(ctx);
+  registerBrowserPanel(ctx, watchTabs);
   const client = crypto.randomUUID(); let revision = 0;
   const delivered = new Map(), acknowledgements = new Map(), busy = new Set();
   ctx.inject?.(["slots", "sessions"], scope => {

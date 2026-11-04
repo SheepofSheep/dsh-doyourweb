@@ -1,5 +1,6 @@
 import { formatMention, remoteContribution } from "./protocol.js";
 import { compactReferences, referenceQuery } from "./reference-folders.js";
+import { browserTabChanges } from "./browser-tab-changes.js";
 
 // This plugin both mounts the Host-for-Client contribution and consumes it, so it
 // cannot declare `remote.browserTabs` as an injected dependency (that would wait
@@ -24,7 +25,17 @@ export function apply(ctx, { browserIcon, tabIcon, appIcon = browserIcon, applic
     return service;
   }
 
+  const lifetime = new AbortController();
+  ctx.effect(() => () => lifetime.abort());
+  const watchTabs = browserTabChanges(namespace, lifetime.signal);
+  const invalidations = new Set();
+  const refreshCandidates = () => { for (const listener of [...invalidations]) listener(); };
+  const lexicon = () => [];
+  const subscribeLexicon = (_session, listener) => { invalidations.add(listener); return () => invalidations.delete(listener); };
+
   async function candidates({ query = "", signal }, slash = false) {
+    if (signal?.aborted) return [];
+    if (signal) watchTabs(refreshCandidates, signal);
     const browserQuery = query && ["browser", "\u6d4f\u89c8\u5668"].includes(query.toLowerCase());
     const matchesSetup = !query || "browser \u6d4f\u89c8\u5668".includes(query.toLowerCase());
     let result;
@@ -67,6 +78,7 @@ export function apply(ctx, { browserIcon, tabIcon, appIcon = browserIcon, applic
 
   ctx.effect(() => ctx.inputTriggers.registerSource({
     trigger: "@", name: "browser-tabs", showGroupTitle: false,
+    lexicon, subscribeLexicon,
     async candidates(_session, request) {
       const { quoted, drilled } = request;
       if (quoted || drilled || referenceQuery(request.query)) return [];
@@ -85,6 +97,7 @@ export function apply(ctx, { browserIcon, tabIcon, appIcon = browserIcon, applic
   }));
   ctx.effect(() => ctx.inputTriggers.registerSource({
     trigger: "/", name: "browser-setup", showGroupTitle: false,
+    lexicon, subscribeLexicon,
     candidates: (_session, request) => candidates(request, true),
     onPick,
   }));
@@ -114,4 +127,5 @@ export function apply(ctx, { browserIcon, tabIcon, appIcon = browserIcon, applic
     // DSH chains .then() directly; even local candidate lists must be async.
     candidates: async (_session, { query = "" }) => !query || "apps 应用 doyourweb".includes(query.toLowerCase())
       ? [{ name: "apps", label: "应用管理", description: "连接器与安装确认", value: "manage", section: "DoYourWeb", icon: appIcon }] : [], onPick }));
+  return watchTabs;
 }
