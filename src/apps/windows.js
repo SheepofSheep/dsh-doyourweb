@@ -56,6 +56,9 @@ $processes=@{}
     if (-not $processes.ContainsKey($window.pid)) {
         $p=Get-Process -Id $window.pid
         if (-not $p) { continue }
+        # Elevated/protected processes may expose a window but no readable identity.
+        # Skip that process instead of aborting every other application's inventory.
+        if (-not $p.Path -or -not $p.StartTime) { continue }
         $info=$p.MainModule.FileVersionInfo
         $processes[$window.pid]=[pscustomobject]@{ Id=$p.Id; ProcessName=$p.ProcessName; Path=$p.Path;
             Started=$p.StartTime.ToUniversalTime().Ticks.ToString(); Product=$info.ProductName; DisplayName=$info.FileDescription }
