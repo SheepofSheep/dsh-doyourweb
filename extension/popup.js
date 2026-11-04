@@ -26,12 +26,15 @@ async function refresh() {
   pairing.hidden = !waiting;
   document.querySelector("#setup").hidden = state.connected;
   code.textContent = state.pairing?.code ?? "";
+  status.dataset.state = state.connected ? "connected" : waiting ? "waiting" : "offline";
+  document.querySelector("#annotate").disabled = !state.connected;
+  document.querySelector("#annotate").title = state.connected ? "选择当前页面元素，批注后加入聊天草稿" : "连接 DSH 后即可批注当前页面";
   status.textContent = waiting ? "\u7b49\u5f85 DSH \u786e\u8ba4\u4e0b\u9762\u7684\u9a8c\u8bc1\u7801"
     : state.connected ? `\u5df2\u8fde\u63a5 \u00b7 ${state.availableTabs} \u4e2a\u6807\u7b7e\u9875 \u00b7 ${state.controlledTabs} \u4e2a\u53d7\u63a7`
       : state.stopped ? "\u5df2\u6682\u505c" : state.paired ? "\u7b49\u5f85 DSH" : "\u672a\u914d\u5bf9";
 }
 
-function showError(error) { status.textContent = error.message; }
+function showError(error) { status.dataset.state = "error"; status.textContent = error.message; }
 for (const type of ["annotate", "manage"]) document.querySelector(`#${type}`).addEventListener("click", () => {
   void send({ type }).catch(showError);
 });
@@ -49,6 +52,7 @@ enabled.addEventListener("change", async () => {
   finally { enabled.disabled = false; }
 });
 savePort.addEventListener("click", async () => {
+  if (!port.reportValidity()) return;
   try { await send({ type: "port", port: Number(port.value) }); }
   catch (error) { showError(error); }
 });

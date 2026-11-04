@@ -148,6 +148,46 @@ try {
   assert.equal(result.results[0].rows[0].text, "Saved DSH");
   assert.equal(result.snapshot, undefined, "summary must not collect another full snapshot");
   assert.equal(await page.locator("#out").textContent(), "Saved DSH");
+  await page.evaluate(() => {
+    window.saveClicks = 0;
+    document.querySelector("#save").addEventListener("click", () => window.saveClicks++);
+  });
+  const dispatched = [];
+  const onSent = (ref, command) => { if (ref === tab.ref) dispatched.push(command); };
+  bridge.on("commandSent", onSent);
+  const originalLocator = engine.locator;
+  engine.locator = function (targetPage, step) {
+    const target = originalLocator.call(this, targetPage, step);
+    if (step.selector === "#save") {
+      const click = target.click.bind(target);
+      target.click = async options => { await click(options); throw new Error("injected post-click wait failure"); };
+    }
+    return target;
+  };
+  const beforeFailure = await engine.read(tab.ref);
+  let failedClick;
+  try {
+    failedClick = await engine.act(tab.ref, { snapshot: beforeFailure.snapshot, observe: "summary", steps: [
+      { op: "click", selector: "#save" }, { op: "click", selector: "#save" },
+    ] });
+  } finally { engine.locator = originalLocator; bridge.off("commandSent", onSent); }
+  assert.ok(dispatched.includes("Input.dispatchMouseEvent"), "receipt evidence must use a real extension input dispatch");
+  assert.equal(failedClick.failure.dispatch, "sent");
+  assert.equal(failedClick.uncertainStep, 0);
+  assert.equal(await page.evaluate(() => window.saveClicks), 1, "a failed post-input wait cannot replay the click or continue the batch");
+  assert.equal((await engine.read(tab.ref)).lastAction.actionId, failedClick.actionId);
+  const scopedRead = await engine.read(tab.ref, { selector: "main" });
+  const scopedResult = await engine.act(tab.ref, { snapshot: scopedRead.snapshot, steps: [{ op: "click", selector: "#save" }],
+    observation: { selector: "main", depth: 4 }, expect: { kind: "text", selector: "#out", value: "Saved DSH", timeout: 1000 } });
+  assert.equal(scopedResult.expectation.status, "matched");
+  assert.equal(scopedResult.completed.length, 1);
+  assert.equal(scopedResult.content.includes("Navigation remains available"), false);
+  const unmetRead = await engine.read(tab.ref);
+  const unmet = await engine.act(tab.ref, { snapshot: unmetRead.snapshot, observe: "summary", steps: [{ op: "click", selector: "#save" }],
+    expect: { kind: "visible", selector: "#missing-result", timeout: 20 } });
+  assert.equal(unmet.expectation.status, "unmet");
+  assert.equal(unmet.completed.length, 1, "final-check timeout cannot erase the click");
+  console.log("PASS: real extension dispatch survives a post-click failure, read.lastAction recovers without replay, explicit post-action scope and one final expectation retain completed facts.");
   const frames = await engine.read(tab.ref);
   const frameRef = frames.content.match(/button "Frame button" \[ref=(f\d+e\d+)\]/)?.[1];
   assert.ok(frameRef, frames.content);
@@ -159,6 +199,51 @@ try {
   assert.equal(main.content.includes("Navigation remains available"), false);
   assert.match((await engine.read(tab.ref)).content, /Navigation remains available/);
   const file = path.join(home, "attachment.txt"); await writeFile(file, "local fixture only");
+  await page.evaluate(() => {
+    const noise = document.createElement("aside"); noise.id = "efficiency-noise";
+    noise.innerHTML = Array.from({ length: 100 }, (_, i) => `<a href="#item-${i}">Unrelated navigation item ${i}</a>`).join(" ");
+    const panel = document.createElement("section"); panel.id = "efficiency";
+    panel.innerHTML = '<label>Search<input id="bench-search"></label><button id="bench-find">Find</button><output id="bench-results"></output><label>Form name<input id="bench-name"></label><button id="bench-submit">Submit</button><output id="bench-saved"></output><input id="bench-file" type="file"><output id="bench-uploaded"></output>';
+    document.body.prepend(noise); document.body.append(panel);
+    panel.querySelector("#bench-find").onclick = () => panel.querySelector("#bench-results").textContent = `Found ${panel.querySelector("#bench-search").value}`;
+    panel.querySelector("#bench-submit").onclick = () => panel.querySelector("#bench-saved").textContent = `Saved ${panel.querySelector("#bench-name").value}`;
+    panel.querySelector("#bench-file").onchange = event => panel.querySelector("#bench-uploaded").textContent = event.target.files[0] ? `Selected ${event.target.files[0].name}` : "";
+  });
+  const measurements = [];
+  const originalSnapshot = engine.snapshot;
+  for (const [journey, selector, expected, steps] of [
+    ["search", "#bench-results", "Found DSH", [{ op: "fill", selector: "#bench-search", value: "DSH" }, { op: "click", selector: "#bench-find" }]],
+    ["form", "#bench-saved", "Saved DSH", [{ op: "fill", selector: "#bench-name", value: "DSH" }, { op: "click", selector: "#bench-submit" }]],
+    ["upload", "#bench-uploaded", "Selected attachment.txt", [{ op: "upload", selector: "#bench-file", files: [file] }]],
+  ]) for (const scoped of [false, true]) {
+    await page.evaluate(selector => { document.querySelector(selector).textContent = ""; }, selector);
+    if (journey === "upload") await page.locator("#bench-file").setInputFiles([]);
+    let snapshots = 0;
+    engine.snapshot = function (...args) { snapshots++; return originalSnapshot.apply(this, args); };
+    const replies = [];
+    try {
+      const read = await engine.read(tab.ref, { selector: "#efficiency" }); replies.push(read);
+      const acted = await engine.act(tab.ref, { snapshot: read.snapshot, steps, ...(scoped ? {
+        observation: { selector: "#efficiency" }, expect: { kind: "text", selector, value: expected, timeout: 1000 },
+      } : {}) }); replies.push(acted);
+      assert.equal(acted.completed.length, steps.length, JSON.stringify(acted));
+      if (scoped) assert.equal(acted.expectation.status, "matched");
+      else {
+        const confirmed = await engine.read(tab.ref, { selector }); replies.push(confirmed);
+        assert.ok(confirmed.content.includes(expected));
+      }
+      measurements.push({ journey, mode: scoped ? "scoped-final-check" : "body-then-confirm-read", toolCalls: replies.length,
+        snapshots, responseChars: replies.reduce((sum, reply) => sum + serialize(reply).length, 0) });
+    } finally { engine.snapshot = originalSnapshot; }
+  }
+  for (const journey of ["search", "form", "upload"]) {
+    const rows = measurements.filter(row => row.journey === journey);
+    assert.equal(rows[0].toolCalls, 3); assert.equal(rows[1].toolCalls, 2);
+    assert.equal(rows[0].snapshots, 3); assert.equal(rows[1].snapshots, 2);
+    assert.ok(rows[1].responseChars < rows[0].responseChars);
+  }
+  console.log("MEASURE: local fixture with 100 unrelated navigation links; serialized JavaScript characters, not tokens:", JSON.stringify(measurements));
+  await page.evaluate(() => { document.querySelector("#efficiency-noise").remove(); document.querySelector("#efficiency").remove(); });
   const commands = [], request = bridge.request.bind(bridge);
   bridge.request = (profile, method, params) => {
     if (method === "chrome.debugger.sendCommand" && params[1] === "DOM.setFileInputFiles") commands.push(params[2]);
@@ -183,6 +268,20 @@ try {
   assert.equal(commands.length, 3, "all uploads must use DOM.setFileInputFiles rather than base64 payloads");
   for (const command of commands) assert.deepEqual(command.files, [file]);
   bridge.request = request;
+  const uploadPage = await bridge.page(tab.ref);
+  const originalWaitForEvent = uploadPage.waitForEvent;
+  uploadPage.waitForEvent = function (event, options) {
+    if (event === "filechooser") return new Promise((_resolve, reject) => setTimeout(() => reject(new Error("injected chooser wait failure")), 200));
+    return originalWaitForEvent.call(this, event, options);
+  };
+  let failedUpload;
+  try {
+    const beforeUploadFailure = await engine.read(tab.ref);
+    failedUpload = await engine.upload(tab.ref, { snapshot: beforeUploadFailure.snapshot, selector: "#choose", files: [file], observe: "summary" });
+  } finally { uploadPage.waitForEvent = originalWaitForEvent; }
+  assert.equal(failedUpload.failure.phase, "button_clicked");
+  assert.equal(failedUpload.failure.dispatch, "sent");
+  assert.equal((await engine.read(tab.ref)).lastAction.actionId, failedUpload.actionId);
   await page.evaluate(() => {
     const source = document.createElement("button"); source.id = "drag-source"; source.draggable = true; source.textContent = "Drag source";
     source.ondragstart = event => event.dataTransfer.setData("text/plain", "moved");
@@ -439,6 +538,12 @@ try {
     const box = await toolbar.boundingBox(); assert.ok(box.x >= 0 && box.x + box.width <= width, "annotation controls must fit mobile and desktop");
     if (artifactDir) await reopened.screenshot({ path: path.join(artifactDir, `annotation-${width}.png`) });
   }
+  // Restore the desktop layout and move the draggable toolbar away from the
+  // page's top-left button before testing detach/recovery below.
+  await reopened.setViewportSize({ width: 1280, height: 800 });
+  const recoveryGrip = await annotationControl("strong", element => { const box = element.getBoundingClientRect(); return { x: box.x + 10, y: box.y + 5 }; });
+  await reopened.mouse.move(recoveryGrip.x, recoveryGrip.y); await reopened.mouse.down();
+  await reopened.mouse.move(1000, 100, { steps: 5 }); await reopened.mouse.up();
   bridge.management = async ({ action }) => action === "apps" ? { apps: [{ name: "Unity", title: "Test project", ref: "fixture" }] }
     : { applications: { plans: [], connectors: [], connections: [], policy: { askBeforeInstall: true, trustedPublishers: [] } } };
   const manager = await browser.newPage();
@@ -464,7 +569,9 @@ try {
   bridge.idleTimeoutMs = 30000;
   await annotations.start(afterRestart.ref);
   await reopened.locator("#save").click();
-  assert.equal(await annotationControl("textarea", element => element.value), "Unfinished draft", "idle detach keeps a draft in the original page only");
+  assert.equal(await annotationControl(".draft-edit", element => element.textContent), "Unfinished draft", "selecting again stages the recovered note in the original page only");
+  await clickAnnotation(".draft-edit");
+  assert.equal(await annotationControl("textarea", element => element.value), "Unfinished draft", "the recovered note can be edited without losing its comment");
   annotations.currentSession({ client: "browser-test", revision: 2, sessionId: "another-session", title: "Another conversation", active: true });
   await annotations.start(afterRestart.ref);
   await reopened.locator("#save").click();

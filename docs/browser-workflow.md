@@ -8,6 +8,10 @@
 
 批注浮窗的“收起”隐藏编辑区；“收纳”将整个浮窗移到页面边缘，并停止选择元素，让网页恢复正常鼠标与键盘操作。点边缘“批注”按钮恢复原位置、说明和截图选项。重新选择元素不会清空说明。“关闭”则清除未完成批注。
 
+0.2.0 可将当前说明“暂存”到待加入队列；选择另一元素时也保留上一条未完成说明。队列中的“编辑”恢复该条，“删除”只移除本页暂存条目；收起、收纳和连接重附着会保留队列。批注绑定选定时的会话，切到其他会话不能误加入；切回原会话后继续。确认“加入聊天草稿”后移出本页队列，聊天草稿中的内容由 DSH 编辑，不承诺从浮窗撤回。整个过程不自动发送。
+
+侧栏页签支持方向键、Home 与 End；无搜索结果可清除搜索，载入失败可重试。长标题悬停可查看全文，图标加载失败使用统一的网页/应用图标。引用卡显示原文字符数，展开后保留完整内容；字符数是展示信息，不表示 token 数或节省量。
+
 README 的浏览器面板图由当前组件使用已安装 DSH 的 React/UI 图元及示例数据渲染；它不是完整 DSH 宿主截图。批注图来自真实组件与本地测试页；连接页图来自真实页面与示例配对请求。
 
 ## 本地诊断
@@ -41,6 +45,10 @@ Open **Browser** in DSH's left navigation to show the current session's right pa
 Page/app context, annotations and explicitly referenced logs display as expandable chips. This changes presentation only; the original serialized model context remains intact.
 
 The annotation toolbar's **Collapse** hides its editor. **Dock** leaves an edge button, preserves the draft and position, and stops element picking so the page receives normal mouse and keyboard input. Restore from the edge button; selecting another element retains the comment. **Close** clears the unfinished annotation.
+
+In 0.2.0, **Stage** keeps the current note in a pending queue; selecting another element also preserves the previous unfinished note. Edit restores a staged note, while delete removes only that pending item. Collapse, dock and reattachment retain the queue. Notes remain bound to their original conversation; switch back before adding them. Confirmed notes leave the page queue and enter the DSH chat draft, where they can be edited before sending. The toolbar does not retract content already added to chat and never sends the chat automatically.
+
+Panel tabs support arrow keys, Home and End. Empty search results offer clear-search, and loading errors offer retry. Long titles expose their full text on hover; failed icons share page/app fallbacks. Context chips show their original character count and expand to full text. This count is presentation metadata, not a token count or saving.
 
 The README panel preview renders the current component with the installed DSH React/UI primitives and sample data; it is not a full DSH host screenshot. The annotation preview uses the real component on a local fixture; the setup preview uses the real page with a sample pairing request.
 

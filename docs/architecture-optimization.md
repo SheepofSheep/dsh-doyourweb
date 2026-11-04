@@ -1,4 +1,35 @@
-# 0.1.7：浏览器上传、精简回执与 Windows 调用复用
+# 浏览器动作证据、局部观察与调用复用
+
+## 0.2.0：执行、观察、确认分开
+
+`browser_act` 和 `browser_upload` 新增可选 `observation: {scope, selector, query, depth}`，语义与读取一致，只作用于本次动作后的快照。未传仍读 body，不隐式继承前次局部读取；显式 `main` 保留“非唯一或不可见则 body”的既有契约。明确 selector 消失或导航导致观察失败时返回 `readError`，不静默回退全页。`summary` 不生成后置快照，`handle` 仍生成所选范围的快照但省略正文。
+
+可选 `expect` 在批次末尾检查一次条件：`visible` 需要 selector，`text` 检查包含文本，`value` 检查输入值完全一致，`url` 检查完整 URL 一致。后三种需要 value；元素条件支持 frame；timeout 为 1～8000 ms。可见性等待到上限，文本和输入值在定位后读取一次，URL 直接比较，不轮询业务结果。
+
+```json
+{
+  "snapshot": "<fresh snapshot>",
+  "steps": [{"op": "click", "selector": "#save"}],
+  "observation": {"selector": "#result", "depth": 4},
+  "expect": {"kind": "text", "selector": "#result", "value": "Saved", "timeout": 1000}
+}
+```
+
+`expectation.status` 为 matched、unmet 或 error，和 completed 分开。条件不满足、后置读取失败或等待超时均不抹除已完成的动作。最近一批回执保存在当前进程中，下次 read 的 lastAction 可继续查看，不承诺重启恢复。失败步骤的 dispatch 区分 none、unknown 与 sent；sent 只证明动作命令已发送到扩展，不证明网页或服务器完成了业务。预检未执行保持 none，没有足够证据的失败保持 unknown。先读当前状态再决定下一步，不自动重放 DOM 或 WebMCP 副作用。
+
+现有应用后端的每连接首次展示窗口、缓存分页、JSON 控件树去重和失败停止证据继续使用；本版不新增无依据的缓存层。视觉收纳不改变模型上下文，不等同于 token 减少。调用次数和序列化字符测量只适用于测试旅程，不发布普遍提速百分比。
+
+`npm run test:browser` 的本地真实扩展/CDP fixture 包含 100 条无关导航链接；对比“默认 body 后再读一次确认”和“显式局部观察并末尾确认”。两种方式均检查同一可观察结果，未向第三方站点提交数据：
+
+| 旅程 | 工具调用 | 快照生成 | 总回包字符（默认 → 局部） |
+| --- | --- | --- | --- |
+| 搜索 | 3 → 2 | 3 → 2 | 2411 → 1277 |
+| 表单 | 3 → 2 | 3 → 2 | 2498 → 1331 |
+| 文件选择 | 3 → 2 | 3 → 2 | 2537 → 1415 |
+
+字符为本次运行所有工具结果序列化后的 JavaScript 字符总和，包含回执元数据；临时端口等元数据长度会使复跑数字略有变化。此受控 fixture 不代表真实网站的普遍收益，也不测量服务器业务成功或网络耗时。测试同时注入真实 click 派发后的等待错误及 chooser 等待错误，验证保留回执且不重放。
+
+## 0.1.7：上传与调用复用
 
 本次按实际代码与宿主协议核验方案，保留可验证的收益。字符数不等于模型 token；文件路径直传也不代表浏览器没有磁盘、内存或网络开销。
 
@@ -61,6 +92,10 @@ Windows 同机窗口枚举对照：每次新 PowerShell 的三次耗时为 769 /
 实现依据：固定版本的 [Cua Driver Windows 工具文档](https://github.com/trycua/cua/blob/cua-driver-rs-v0.28.0/docs/content/docs/reference/cua-driver/mcp-tools-windows.mdx)、本项目固定 Playwright 1.64 的 `ConnectOverCDPOptions.isLocal` 类型与上传实现，以及当前安装 DSH 的实际运行包。
 
 ## English
+
+0.2.0 adds optional `observation: {scope, selector, query, depth}` to action/upload calls. It narrows only the post-action snapshot; omitted scope retains body, with no implicit inheritance. Explicit main keeps the documented unique-visible-landmark fallback. A missing explicit selector or navigation produces an observation error rather than a successful full-page fallback. Handle still generates the chosen snapshot; summary skips it.
+
+Optional `expect: {kind, selector?, frame?, value?, timeout?}` checks one final condition: visibility, contained text, exact input value or exact full URL. Visibility waits up to the bounded timeout; text/value read once after locating, and URL compares once. `expectation` reports matched/unmet/error independently of execution. Failed checks and reads retain completed actions and the latest in-process `read.lastAction`. Failed-step dispatch is none/unknown/sent; sent proves transport to the extension, not business success. Inspect current state before continuing; effects are never automatically replayed. Desktop compatibility and timing for native Cua apps have not been measured on this machine.
 
 0.1.7 adds `browser_upload` and batch uploads with exact user-supplied absolute paths, a selected tab, regular-file validation, hidden input/custom chooser support, and iframe selectors. Local CDP uses Playwright's `isLocal: true`; real integration checks assert `DOM.setFileInputFiles` paths instead of base64 payloads. Selecting files can immediately disclose/upload them to the website.
 

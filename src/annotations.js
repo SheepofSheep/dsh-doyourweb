@@ -55,6 +55,7 @@ export class Annotations {
     const item = annotationData(value);
     if (page.url() !== item.url) throw new Error("Document changed; select the element again");
     if (!target?.sessionId || typeof this.submit !== "function") throw new Error("No conversation is selected for this annotation");
+    if (value.sessionId && value.sessionId !== target.sessionId) throw new Error("批注属于另一会话，请切回原会话后再加入");
     const { comment, ...metadata } = item;
     // Captured page text must not grant control over additional apps or tabs.
     const untrusted = serialize(metadata).replace(/dsh-(browser|app|annotation):\/\//gi, "dsh-$1:\\/\\/");
@@ -99,7 +100,7 @@ export class Annotations {
       request = JSON.parse(event.payload);
       if (request.value?.action === "target") {
         entry.target = entry.locked || this.target(ref);
-        return this.reply(entry, event.executionContextId, request.id, { title: entry.target.title || "当前会话" });
+        return this.reply(entry, event.executionContextId, request.id, { title: entry.target.title || "当前会话", sessionId: entry.target.sessionId });
       }
       const target = entry.target;
       const result = await this.send(ref, entry.page, request.value, target);

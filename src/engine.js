@@ -62,7 +62,7 @@ function boundedExtraction(index, data, limit) {
 }
 
 function boundAction(result) {
-  for (const [object, key] of [[result.failure, "error"], [result, "readError"], [result, "url"]]) {
+  for (const [object, key] of [[result.failure, "error"], [result.expectation, "error"], [result, "readError"], [result, "url"]]) {
     while (serialize(result).length > 1400 && object?.[key]?.length > 16) {
       object[key] = clip(object[key], Math.floor(object[key].length / 2));
       if (key === "url") result.metadataTruncated = true;
@@ -185,22 +185,30 @@ export class BrowserEngine {
       signal = actionSignal;
       checkpoint(signal);
       const state = this.states.get(ref);
-      let document = await this.document(page);
-      if (!state || options.snapshot !== state.id || document.epoch !== state.epoch || document.url !== state.url) {
-        throw new Error("Snapshot is stale. Call browser_read before acting; no actions were performed.");
-      }
-      if (state.refsAvailable === false && options.steps.some(step => step.ref || step.toRef)) throw new Error("Handle receipt withheld element refs. Read its cursor before using refs, or continue with selectors; old refs must not be reused.");
+      const actionId = randomUUID().slice(0, 8);
       const uploads = new Map();
-      for (const [index, step] of options.steps.entries()) if (step.op === "upload" || step.op === "drop" && step.files) {
-        if (!Array.isArray(step.files) || !step.files.length || step.files.length > 20) throw new Error("Upload requires 1-20 explicitly authorized absolute file paths");
-        const files = [];
-        for (const file of step.files) {
-          if (typeof file !== "string" || !path.isAbsolute(file)) throw new Error("Upload paths must be absolute local files");
-          const resolved = await realpath(file);
-          if (!(await stat(resolved)).isFile()) throw new Error("Upload requires a regular file, not a directory");
-          await access(resolved, constants.R_OK); files.push(resolved);
+      let document = await this.document(page);
+      try {
+        if (!state || options.snapshot !== state.id || document.epoch !== state.epoch || document.url !== state.url) {
+          throw new Error("Snapshot is stale. Call browser_read before acting; no actions were performed.");
         }
-        uploads.set(index, files);
+        if (state.refsAvailable === false && options.steps.some(step => step.ref || step.toRef)) throw new Error("Handle receipt withheld element refs. Read its cursor before using refs, or continue with selectors; old refs must not be reused.");
+        for (const [index, step] of options.steps.entries()) if (step.op === "upload" || step.op === "drop" && step.files) {
+          if (!Array.isArray(step.files) || !step.files.length || step.files.length > 20) throw new Error("Upload requires 1-20 explicitly authorized absolute file paths");
+          const files = [];
+          for (const file of step.files) {
+            if (typeof file !== "string" || !path.isAbsolute(file)) throw new Error("Upload paths must be absolute local files");
+            const resolved = await realpath(file);
+            if (!(await stat(resolved)).isFile()) throw new Error("Upload requires a regular file, not a directory");
+            await access(resolved, constants.R_OK); files.push(resolved);
+          }
+          uploads.set(index, files);
+        }
+      } catch (error) {
+        // A stale retry must not erase the batch whose effects still need inspection.
+        if (!this.receipts.has(ref) || state?.id === options.snapshot) this.receipts.set(ref,
+          { actionId, snapshot: options.snapshot, completed: [], dispatch: "none", rejected: true });
+        throw error;
       }
       const completed = [];
       const results = [];
@@ -215,33 +223,38 @@ export class BrowserEngine {
       this.receipts.delete(ref);
       for (let index = 0; index < options.steps.length; index++) {
         const step = options.steps[index];
-        let attempted = false;
+        let invoked = false, sent = false, phase;
+        const invoke = operation => { invoked = true; return operation(); };
+        const commandSent = (tab, command) => {
+          if (invoked && tab === ref && /^(?:Input\.(?:dispatchMouseEvent|dispatchKeyEvent|insertText|dispatchTouchEvent|dispatchDragEvent)|DOM\.setFileInputFiles|Page\.(?:navigate|navigateToHistoryEntry))$/.test(command)) sent = true;
+        };
+        this.bridge.on?.("commandSent", commandSent);
         try {
           checkpoint(signal);
-          attempted = !["wait", "extract"].includes(step.op);
           if (step.op === "navigate") {
             if (!canControl(step.value)) throw new Error("Only HTTP/HTTPS or local file navigation is supported");
-            await page.goto(step.value, { waitUntil: "domcontentloaded", signal });
-          } else if (step.op === "back") await page.goBack({ waitUntil: "domcontentloaded", signal });
-          else if (step.op === "forward") await page.goForward({ waitUntil: "domcontentloaded", signal });
+            await invoke(() => page.goto(step.value, { waitUntil: "domcontentloaded", signal }));
+          } else if (step.op === "back") await invoke(() => page.goBack({ waitUntil: "domcontentloaded", signal }));
+          else if (step.op === "forward") await invoke(() => page.goForward({ waitUntil: "domcontentloaded", signal }));
           else if (step.op === "scroll") {
-            await page.mouse.wheel(0, step.amount || 600);
+            await invoke(() => page.mouse.wheel(0, step.amount || 600));
           } else {
             const target = this.locator(page, step);
             if (activity && !["wait", "extract", "upload"].includes(step.op)) await activity.pulse(target, signal).catch(() => {});
-            if (step.op === "click") await target.click({ signal });
+            if (step.op === "click") await invoke(() => target.click({ signal }));
             else if (step.op === "drag") {
               const destination = this.locator(page, { ref: step.toRef, selector: step.toSelector, frame: step.frame });
-              await target.dragTo(destination, { timeout: 8000, signal });
+              await invoke(() => target.dragTo(destination, { timeout: 8000, signal }));
             }
             else if (step.op === "drop") {
-              await target.drop({ ...(uploads.has(index) ? { files: uploads.get(index) } : {}), ...(step.data ? { data: step.data } : {}) }, { timeout: 8000, signal });
+              await invoke(() => target.drop({ ...(uploads.has(index) ? { files: uploads.get(index) } : {}), ...(step.data ? { data: step.data } : {}) }, { timeout: 8000, signal }));
               if (uploads.has(index)) results.push({ index, files: uploads.get(index).map(file => clip(path.basename(file), 40)) });
             }
             else if (step.op === "upload") {
               const files = uploads.get(index);
               const input = await target.evaluate(element => element.localName === "input" && element.type === "file", undefined, { timeout: 8000, signal });
-              if (input) await target.setInputFiles(files, { timeout: 8000, signal });
+              phase = input ? "selecting_files" : "opening_chooser";
+              if (input) await invoke(() => target.setInputFiles(files, { timeout: 8000, signal }));
               else {
                 // Cancel the waiter when its triggering click fails as well.
                 const chooserController = new AbortController();
@@ -249,19 +262,22 @@ export class BrowserEngine {
                 const pending = page.waitForEvent("filechooser", { timeout: 8000, signal: chooserSignal });
                 pending.catch(() => {});
                 try {
-                  await target.click({ timeout: 8000, signal });
+                  await invoke(() => target.click({ timeout: 8000, signal }));
+                  phase = "button_clicked";
                   const chooser = await pending;
+                  phase = "chooser_received";
                   checkpoint(signal);
                   await chooser.setFiles(files, { timeout: 8000, signal });
                 } finally { chooserController.abort(); }
               }
+              phase = "files_selected";
               results.push({ index, files: files.map(file => clip(path.basename(file), 40)) });
             }
-            else if (step.op === "fill") await target.fill(step.value, { signal });
-            else if (step.op === "press") await target.press(step.value, { signal });
-            else if (step.op === "select") await target.selectOption(step.value, { signal });
-            else if (step.op === "check") await target.setChecked(step.checked ?? true, { signal });
-            else if (step.op === "hover") await target.hover({ signal });
+            else if (step.op === "fill") await invoke(() => target.fill(step.value, { signal }));
+            else if (step.op === "press") await invoke(() => target.press(step.value, { signal }));
+            else if (step.op === "select") await invoke(() => target.selectOption(step.value, { signal }));
+            else if (step.op === "check") await invoke(() => target.setChecked(step.checked ?? true, { signal }));
+            else if (step.op === "hover") await invoke(() => target.hover({ signal }));
             else if (step.op === "wait") await target.waitFor({ state: step.state || "visible", timeout: step.timeout || 8000, signal });
             else if (step.op === "extract") {
               const fields = step.fields || ["text"];
@@ -302,25 +318,52 @@ export class BrowserEngine {
           }
         } catch (error) {
           cancelled = signal?.aborted === true;
-          if ((cancelled || ["drag", "drop"].includes(step.op)) && attempted && completed.at(-1)?.index !== index) uncertainStep = index;
-          failure = { index, op: step.op, error: clip(error.message || error, 200) };
+          if (invoked && completed.at(-1)?.index !== index) uncertainStep = index;
+          failure = { index, op: step.op, error: clip(error.message || error, 200),
+            dispatch: sent ? "sent" : invoked ? "unknown" : "none", ...(phase ? { phase } : {}) };
           break;
-        }
+        } finally { this.bridge.off?.("commandSent", commandSent); }
       }
-      const result = boundAction({ tab: ref, completed, remaining: options.steps.length - completed.length,
+      const result = boundAction({ tab: ref, actionId, fromSnapshot: state.id, completed, remaining: options.steps.length - completed.length,
         ...(results.length ? { results } : {}),
-        ...(failure ? { failure, retry: "Read current state first. Do not repeat completed actions." } : {}),
+        ...(failure ? { failure, retry: "Read current state first. Do not replay completed or uncertain actions." } : {}),
         ...(navigated ? { navigated: true, stopped: "Navigation occurred; read the new page before remaining actions." } : {}),
         ...(cancelled ? { cancelled: true } : {}),
         ...(uncertainStep !== undefined ? { uncertainStep, mayHaveLateEffects: true } : {}) });
-      if (cancelled) {
-        this.receipts.set(ref, { snapshot: state.id, completed: completed.map(step => step.index), cancelled: true,
-          ...(uncertainStep !== undefined ? { uncertainStep, mayHaveLateEffects: true } : {}) });
-        return result;
+      const receipt = { actionId, snapshot: state.id, completed: completed.map(step => step.index),
+        ...(failure ? { failure: { index: failure.index, dispatch: failure.dispatch, ...(failure.phase ? { phase: failure.phase } : {}) } } : {}),
+        ...(cancelled ? { cancelled: true } : {}),
+        ...(navigated ? { navigated: true } : {}),
+        ...(uncertainStep !== undefined ? { uncertainStep, mayHaveLateEffects: true } : {}) };
+      this.receipts.set(ref, receipt);
+      if (cancelled) return result;
+      if (options.expect && !failure && completed.length === options.steps.length) {
+        const expected = options.expect;
+        try {
+          checkpoint(signal);
+          let matched;
+          if (expected.kind === "url") matched = (await this.document(page)).url === expected.value;
+          else {
+            const target = this.locator(page, expected);
+            if (expected.kind === "visible") {
+              await target.waitFor({ state: "visible", timeout: expected.timeout || 8000, signal });
+              matched = true;
+            } else matched = await target.evaluate((element, expected) => expected.kind === "text"
+              ? (element.innerText ?? element.textContent ?? "").includes(expected.value)
+              : element.type !== "password" && element.value === expected.value,
+            { kind: expected.kind, value: expected.value }, { timeout: expected.timeout || 8000, signal });
+          }
+          result.expectation = { kind: expected.kind, status: matched ? "matched" : "unmet" };
+        } catch (error) {
+          result.expectation = { kind: expected.kind, status: error.name === "TimeoutError" ? "unmet" : "error", error: clip(error.message || error, 200) };
+          if (signal?.aborted) { result.cancelled = true; receipt.cancelled = true; }
+        }
+        receipt.expectation = { kind: result.expectation.kind, status: result.expectation.status };
       }
-      if (options.observe === "summary") return result;
+      if (result.cancelled) return boundAction(result);
+      if (options.observe === "summary") return boundAction(result);
       try {
-        const next = await this.snapshot(ref, page, {}, signal);
+        const next = await this.snapshot(ref, page, options.observation || {}, signal);
         if (options.observe === "handle") {
           next.refsAvailable = false;
           return boundAction({ ...result, snapshot: next.id, cursor: `${next.id}:0`, url: clip(next.url, 512), title: clip(next.title, 128), refs: "read_required" });
@@ -329,16 +372,17 @@ export class BrowserEngine {
       } catch (error) {
         if (signal?.aborted) {
           this.states.delete(ref);
-          this.receipts.set(ref, { snapshot: state.id, completed: completed.map(step => step.index), cancelled: true });
+          receipt.cancelled = true;
           return { ...result, cancelled: true };
         }
+        receipt.readError = true;
         return boundAction({ ...result, url: clip(page.url(), 256), readError: clip(error.message, 200) });
       }
     }, signal, true));
   }
 
   upload(ref, options, signal) {
-    return this.act(ref, { snapshot: options.snapshot, observe: options.observe,
+    return this.act(ref, { snapshot: options.snapshot, observe: options.observe, observation: options.observation, expect: options.expect,
       steps: [{ op: "upload", ref: options.ref, selector: options.selector, frame: options.frame, files: options.files }] }, signal);
   }
 

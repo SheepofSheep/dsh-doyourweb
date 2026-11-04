@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { Annotations } from "../src/annotations.js";
 import { appendAnnotationDraft } from "../src/annotation-drafts.js";
 
+test("a staged annotation cannot be appended to a different conversation", async () => {
+  const notes = new Annotations({}, { submit: () => assert.fail("wrong-session draft must not submit") });
+  const value = { url: "https://example.com", selector: "#save", comment: "Keep this note in its original conversation", sessionId: "original" };
+  await assert.rejects(notes.send("dsh-browser://test/1", { url: () => value.url }, value, { sessionId: "another" }), /另一会话|different|session/i);
+  await notes.close();
+});
+
 test("annotations wait for composer acknowledgement and stay scoped to their conversation/client", async () => {
   const notes = new Annotations({});
   const request = { sessionId: "one", requestId: "note", content: [{ type: "text", text: "Fix button" }] };

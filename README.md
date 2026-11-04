@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.1.9` avoids repeatedly presenting the desktop window during inspection, projects JSON-only control trees once and preserves failed-action evidence with the stopped step. These behaviors are covered by automated tests and a stdio MCP fixture; native Cua application compatibility and timing have not been measured on this machine. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
+Version `0.2.0` refines the browser panel, expandable context, annotation toolbar and connection pages. Browser actions retain execution evidence after failures, can narrow their post-action snapshot with `observation`, and optionally check one final `expect` condition. Existing quiet desktop reads and paginated controls remain available. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,7 +25,7 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.1.9** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.2.0** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
@@ -58,7 +58,8 @@ There is no public hosted demo. After the DSH plugin starts, its default local c
 | Compact reading | Accessibility snapshots support selector/query narrowing and cursor pagination. Initial reference context shares a default 2,400-character budget. |
 | Batched actions | Runs up to 12 typed actions per call, including uploads; stops on failure/document navigation. Query/hash routes only continue observations or target-free steps. |
 | Result extraction | Returns selected `text`, `value` and `href` fields, with up to 20 rows per extraction. |
-| Short receipts | `summary` skips the next snapshot; `handle` returns a fresh ID/cursor without text. Read its cursor before using element refs; known selectors may continue. |
+| Scoped receipts | `summary` skips the next snapshot; `handle` returns a fresh ID/cursor without text. `observation` explicitly narrows the post-action snapshot. Read the handle cursor before using element refs. |
+| Final checks | Optional `expect` checks visibility, contained text, an exact input value or exact URL once after the batch. The result stays separate from completed actions and does not replay effects. |
 | File uploads | Hidden inputs, custom choosers and iframe selectors; requires a selected tab and exact user-supplied absolute file paths. |
 | Drag and drop | Drag between elements in the same frame, or drop authorized local files and MIME data onto an element. |
 | Network metadata | Explicit start/stop capture, 200-entry capacity, filtered pages of 10 (up to 20). No query strings, credentials, headers or bodies. |
@@ -66,7 +67,7 @@ There is no public hosted demo. After the DSH plugin starts, its default local c
 | Browser stop | Input displays private stop controls and a brief target highlight; cancellation stops later steps and reports uncertain effects. |
 | Screenshots | Saves PNG files locally and returns their paths instead of embedding base64. |
 | Background connection | Saves pairing settings, reconnects automatically, and releases idle debugger connections. |
-| Element annotations | Pick an element and send a comment, selector, styles, bounds and optional cropped screenshot to the chat draft. Drag the toolbar, collect multiple annotations, then press Enter in chat to send. |
+| Element annotations | Stage multiple comments with selectors, styles, bounds and optional crops; edit or delete staged notes. The session-bound queue survives collapse, docking and reattachment. Confirm notes into the chat draft, then send from chat. |
 | Running apps | Search visible Windows application windows with `@`, with cached program icons. References include process lifetime and window identity. |
 | MCP / CLI | Known official connectors, MCP Registry and npm CLI discovery, stdio / Streamable HTTP, and reviewed custom configurations. |
 | Installation approval | Native DSH questions or a local `/apps` page; exact package versions and npm lifecycle scripts disabled. Optional repeat-install bypass is restricted to reviewed, trusted sources. |
@@ -141,7 +142,7 @@ This requires a published package. If the registry returns `404`, use the local 
 ### Build and Install Locally
 
 ```sh
-git clone --branch ver0.1.9 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.0 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build

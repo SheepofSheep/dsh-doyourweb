@@ -4,7 +4,7 @@
 
 让 DeepSeek Harness 引用并操作你已经打开、保持登录的 Chrome 和 Edge 页面，用精简的页面上下文和批量操作减少重复读取。
 
-`0.1.9` 减少桌面读取时的反复窗口激活，去除 JSON 控件树的重复输出，并在动作失败时保留驱动证据与停止步骤。上述行为已通过自动化测试和 stdio MCP fixture 验证；本机未测量真实 Cua 应用的兼容性和耗时。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
+`0.2.0` 改善浏览器面板、可展开上下文、批注工具栏与连接页面。浏览器动作失败后保留执行证据，可用 `observation` 显式缩小后置快照，并用 `expect` 在批次末尾检查一次结果条件。保留桌面安静读取与控件分页。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -27,7 +27,7 @@
 
 项目由 DSH 插件和配套的 Manifest V3 浏览器扩展组成。插件接入原生 `@`、`/` 菜单，扩展提供标签页信息和控制通道。完成一次配对后，扩展会在后台重连，不必一直打开弹窗。
 
-当前版本为 **0.1.9**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
+当前版本为 **0.2.0**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
 
 ## 02 · 功能预览
 
@@ -60,7 +60,8 @@
 | 精简读取 | 使用可访问性快照，支持选择器、查询过滤和游标分页；初始引用上下文默认共用 2,400 字符预算。 |
 | 批量操作 | 单次最多 12 步，支持上传；失败或文档导航时停止，query/hash 变化仅让观察或无目标动作继续。 |
 | 结果提取 | 按需返回 `text`、`value`、`href` 字段，每次提取最多 20 行。 |
-| 简短回执 | `summary` 不生成新快照；`handle` 返回新句柄和游标、不返回正文，使用 refs 前先读游标。 |
+| 局部回执 | `summary` 不生成新快照；`handle` 返回句柄和游标、不返回正文，使用 refs 前先读游标；`observation` 显式缩小后置快照范围。 |
+| 末尾确认 | 可选 `expect` 在批次末尾检查一次可见性、包含文本、准确输入值或完整 URL；确认结果与已完成动作分开，不重放副作用。 |
 | 文件上传 | 隐藏 input、自定义选择器和 iframe；需已选标签页及用户明确提供的绝对文件路径。 |
 | 拖拽与投放 | 在同一 frame 内拖拽元素，或向目标元素投放已授权本地文件及 MIME 数据。 |
 | 网络元数据 | 显式开始与停止，最多保留 200 条；默认每页 10 条、最多 20 条，可筛选。不记录查询参数、凭据、请求头和正文。 |
@@ -68,7 +69,7 @@
 | 浏览器停止 | 输入时显示独立停止按钮与目标光环，取消后报告已完成及可能不确定的效果。 |
 | 页面截图 | 将 PNG 保存到本地，返回文件路径，不把 base64 塞进文本上下文。 |
 | 后台连接 | 保存配对配置、自动重连，并在空闲时释放调试连接。 |
-| 元素批注 | 页面右上角“批注”选择元素，将说明、CSS 选择器、样式、位置和可选局部截图追加到聊天草稿；浮窗可拖动，多条批注一起发送。 |
+| 元素批注 | 选择元素后可暂存多条批注、逐条编辑或删除；队列绑定原会话，随浮窗收起、收纳与重附着保留。确认后加入聊天草稿，由你发送。 |
 | 应用引用 | `@` 搜索运行中的 Windows 窗口，显示程序图标，用进程启动时间和窗口句柄防止旧引用误控新进程。 |
 | MCP / CLI | 默认查询匹配的 MCP；支持本机 stdio、Streamable HTTP、自定义连接器和有来源的配置提议。 |
 | 安装确认 | DSH 原生提问或 `/apps` 本地页面批准安装；固定包版本，npm 禁用安装脚本，关闭重复询问仅限已审阅和信任的来源。 |
@@ -144,7 +145,7 @@ dsh-doyourweb
 ### 构建并安装本地版本
 
 ```sh
-git clone --branch ver0.1.9 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.0 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build

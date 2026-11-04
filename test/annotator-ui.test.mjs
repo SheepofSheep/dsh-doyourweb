@@ -125,8 +125,34 @@ test("annotation collapse, edge storage and restoration preserve drafts without 
   assert.equal(sent.length, 2, "restoration never submits a draft");
   await click(control("选择页面元素并批注"));
   await page.locator("h1").click();
+  assert.equal(await inspect("textarea", element => element.value), "", "choosing a new element starts a separate draft");
+  assert.equal(await inspect(".draft-edit", element => element.textContent), "窄屏上的未完成草稿", "the earlier draft remains available to edit");
+  await click(".draft-edit");
   assert.equal(await inspect("textarea", element => element.value), "窄屏上的未完成草稿");
+  await click(control("暂存当前批注，稍后继续编辑"));
+  await click(control("选择页面元素并批注"));
+  await page.locator("h1").click();
+  await inspect("textarea", element => { element.value = "第二条暂存批注"; });
+  await click(control("暂存当前批注，稍后继续编辑"));
+  assert.equal(await inspect(".draft-list", element => element.children.length), 2);
+  if (process.env.DSH_TEST_ARTIFACTS) {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.screenshot({ path: path.join(process.env.DSH_TEST_ARTIFACTS, "annotation-queue.png") });
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.screenshot({ path: path.join(process.env.DSH_TEST_ARTIFACTS, "annotation-dark.png") });
+    await page.emulateMedia({ colorScheme: "light" });
+  }
+  await click(".draft-edit");
+  await inspect("textarea", element => { element.value = "已编辑的未完成草稿"; });
+  await click(".draft-row:nth-child(2) .draft-edit");
+  assert.equal(await inspect("textarea", element => element.value), "第二条暂存批注");
+  await click('.draft-row:nth-child(2) button[title="删除这条暂存批注"]');
+  assert.equal(await inspect(".draft-list", element => element.children.length), 1);
+  await click(".draft-edit");
+  assert.equal(await inspect("textarea", element => element.value), "已编辑的未完成草稿", "switching notes retains edits");
   await page.keyboard.press("Enter");
   await page.waitForFunction(() => window.annotationTestRoot.querySelector("textarea").value === "");
   assert.equal(sent.length, 3);
+  assert.equal(sent[2].comment, "已编辑的未完成草稿");
+  assert.equal(await inspect(".draft-list", element => element.children.length), 0, "accepted notes leave the local pending list");
 });

@@ -1,25 +1,17 @@
-import { createElement, useEffect, useState } from "react";
+import { createElement, useEffect } from "react";
 import { IconGlobeOutlineRegular } from "@deepseek-ai/dsh-client-ui-primitives";
 import { apply as registerSources } from "./client.js";
 import { appendAnnotationDraft } from "./annotation-drafts.js";
-import { registerBrowserPanel } from "./browser-panel.js";
+import { ObjectIcon, registerBrowserPanel } from "./browser-panel.js";
 
 export { inject } from "./client.js";
 
 function TabIcon({ favicon, size = 14 }) {
-  const [failed, setFailed] = useState(false);
-  if (!favicon || failed) return createElement(IconGlobeOutlineRegular, { size });
-  return createElement("img", { src: favicon, width: size, height: size, alt: "",
-    style: { display: "block", objectFit: "contain" }, onError: () => setFailed(true) });
+  return createElement(ObjectIcon, { src: favicon, size });
 }
 
 function AppIcon({ icon, size = 14 }) {
-  const [failed, setFailed] = useState(false);
-  if (icon && !failed) return createElement("img", { src: icon, width: size, height: size, alt: "",
-    style: { display: "block", objectFit: "contain" }, onError: () => setFailed(true) });
-  return createElement("svg", { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, "aria-hidden": true },
-    createElement("rect", { x: 3, y: 4, width: 18, height: 13, rx: 2 }),
-    createElement("path", { d: "M8 21h8m-4-4v4" }));
+  return createElement(ObjectIcon, { src: icon, app: true, size });
 }
 
 function AnnotationSession({ sessionId, publish }) {

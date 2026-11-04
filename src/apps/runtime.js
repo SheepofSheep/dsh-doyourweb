@@ -46,7 +46,7 @@ export function runProcess(command, args = [], { cwd, env, signal, timeout = 300
 }
 
 export class McpConnection {
-  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: "0.1.9" }); }
+  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: "0.2.0" }); }
   async connect(signal) {
     const c = this.candidate;
     if (c.url) this.transport = new StreamableHTTPClientTransport(new URL(c.url), { requestInit: { headers: c.headers || {}, redirect: "error" } });

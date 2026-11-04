@@ -9,10 +9,10 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
   }
   const host = document.createElement("div");
   host.dataset.dshAnnotation = "toolbar";
-  host.style.cssText = "all:initial;font:13px/1.5 system-ui,sans-serif;color:#252525;position:fixed;right:16px;top:12px;max-width:calc(100vw - 16px);z-index:2147483647";
+  host.style.cssText = 'all:initial;font:13px/1.5 "Segoe UI","Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:var(--ink,#242424);color-scheme:light dark;position:fixed;right:16px;top:12px;max-width:calc(100vw - 16px);z-index:2147483647;display:flex;flex-direction:column;max-height:calc(100dvh - 16px);background:var(--ground,#fff);border-radius:12px;box-shadow:0 6px 24px #0002;overflow:hidden';
   const root = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = `:host{font:13px/1.5 system-ui,sans-serif;color:#252525;color-scheme:light}*{box-sizing:border-box}button,input,textarea{font:inherit}button{cursor:pointer;min-height:34px;border:1px solid #d4d4d4;border-radius:8px;padding:6px 10px;background:#fff;color:#303030;white-space:nowrap}button:hover{background:#f2f2f2}button:active{background:#e8e8e8}button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid #555;outline-offset:2px}button:disabled{cursor:wait;background:#ededed;color:#626262}button[aria-pressed=true],.primary{background:#292929;color:#fff;border-color:#292929}.primary:hover{background:#414141}nav{display:flex;gap:4px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 16px);padding:8px;background:#fff;border-radius:12px;box-shadow:0 4px 20px #0002}strong{font-size:12px;font-weight:600;min-width:0;max-width:132px;margin:0 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}section{width:min(370px,calc(100vw - 16px));max-height:calc(100vh - 88px);overflow:auto;overscroll-behavior:contain;margin-top:8px;padding:16px;background:#fff;border-radius:12px;box-shadow:0 6px 24px #0002;scrollbar-color:#b5b5b5 #f4f4f4;scrollbar-width:thin}h2{font-size:14px;font-weight:600;margin:0 0 10px}code{display:block;background:#f5f5f5;color:#606060;border-radius:6px;padding:7px 9px;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace;max-height:54px;overflow:auto}textarea{display:block;width:100%;min-height:108px;max-height:36vh;resize:vertical;margin:12px 0;padding:10px;border:1px solid #ccc;border-radius:8px;background:#fff;color:#252525;line-height:1.6;caret-color:#252525}textarea::placeholder{color:#686868}::selection{background:#dedede;color:#171717}footer{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}label{display:flex;gap:6px;align-items:center;font-size:12px;color:#606060}input{accent-color:#303030;margin:0}output{display:block;width:min(370px,calc(100vw - 16px));max-height:25vh;overflow:auto;overflow-wrap:anywhere;font-size:12px}output:not(:empty){margin-top:8px;padding:10px 12px;background:#f5f5f5;color:#454545;border-radius:8px;box-shadow:0 3px 14px #0001}small{display:block;font-size:12px;color:#686868;margin-top:10px}.restore{min-height:40px;padding:8px 12px;background:#fff;box-shadow:0 3px 16px #0002;border:0;border-radius:10px}[hidden]{display:none!important}@media(max-width:440px){nav button{min-height:40px}strong{flex-basis:100%;max-width:100%;padding:0 2px;margin-bottom:2px}section{max-height:calc(100vh - 120px)}footer .primary{flex:1}}`;
+  style.textContent = `:host{--ink:#242424;--muted:#666;--ground:#fff;--surface:#f4f4f4;--line:#d8d8d8;--focus:#0066cc;font:13px/1.5 "Segoe UI","Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:var(--ink);color-scheme:light;display:flex;flex-direction:column;max-height:calc(100dvh - 16px);background:var(--ground);border-radius:12px;box-shadow:0 6px 24px #0002;overflow:hidden}*{box-sizing:border-box}button,input,textarea{font:inherit}button{display:inline-flex;align-items:center;justify-content:center;gap:5px;cursor:pointer;min-height:34px;border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:var(--ground);color:var(--ink);white-space:nowrap}button svg{flex:none}button:hover{background:var(--surface)}button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--focus);outline-offset:3px}button:disabled{cursor:wait;opacity:.5}button[aria-pressed=true],.primary{background:var(--ink);color:var(--ground);border-color:var(--ink)}.primary:hover{opacity:.85;background:var(--ink)}nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:min(400px,calc(100vw - 16px));padding:12px;background:var(--ground);border-radius:0;flex:none}strong{font-size:12px;font-weight:600;min-width:0;flex-basis:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:3px}nav>button:last-child{margin-left:auto;border-color:transparent}section{width:min(400px,calc(100vw - 16px));min-height:0;max-height:calc(100dvh - 180px);overflow:auto;overscroll-behavior:contain;margin-top:0;padding:16px;background:var(--ground);border-radius:0;border-top:1px solid var(--line);scrollbar-color:var(--line) var(--ground);scrollbar-width:thin}h2{font-size:14px;font-weight:600;margin:0 0 12px}code{display:block;background:var(--surface);color:var(--muted);border-radius:6px;padding:8px 10px;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace;max-height:54px;overflow:auto}textarea{display:block;width:100%;min-height:112px;max-height:30vh;resize:vertical;margin:12px 0;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--ground);color:var(--ink);line-height:1.6;caret-color:var(--ink)}textarea::placeholder{color:var(--muted)}::selection{background:var(--line);color:var(--ink)}footer{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}label{display:flex;gap:5px;align-items:center;font-size:12px;color:var(--muted);margin-right:auto}input{accent-color:var(--ink);margin:0}output{display:block;flex:none;width:min(400px,calc(100vw - 16px));max-height:18vh;overflow:auto;overflow-wrap:anywhere;font-size:12px}output:not(:empty){margin-top:0;padding:10px 12px;background:var(--ground);color:var(--muted);border-radius:0;border-top:1px solid var(--line)}small{display:block;font-size:12px;color:var(--muted);margin-top:12px}.restore{min-height:40px;padding:8px 12px;background:var(--ground);border:0;border-radius:8px}.draft-list{margin-top:4px}.draft-row{display:flex;gap:6px;padding-top:6px}.draft-row button{border:0;background:var(--surface);min-height:32px}.draft-row .draft-edit{display:block;text-align:left;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.draft-row .draft-edit[aria-pressed=true]{color:var(--ink);outline:1px solid var(--line)}[hidden]{display:none!important}@media(prefers-color-scheme:dark){:host{--ink:#eee;--muted:#aaa;--ground:#202020;--surface:#2d2d2d;--line:#474747;--focus:#82b5ff;color-scheme:dark}}@media(max-width:440px){nav button{min-height:38px}nav{gap:5px}nav button{padding:6px 8px}footer{gap:6px}footer button{padding:6px 8px}}`;
   try {
     const sheet = new CSSStyleSheet(); sheet.replaceSync(style.textContent); root.adoptedStyleSheets = [sheet];
   } catch { root.append(style); }
@@ -22,6 +22,14 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
   const collapse = document.createElement("button"); collapse.textContent = "收起"; collapse.title = "收起编辑区，保留批注工具栏"; collapse.setAttribute("aria-expanded", "true");
   const dock = document.createElement("button"); dock.textContent = "收纳"; dock.title = "收纳到页面边缘，保留未完成批注";
   const close = document.createElement("button"); close.textContent = "关闭"; close.title = "关闭批注工具并清除未完成批注";
+  const icon = (button, path) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [name, value] of Object.entries({ width: "15", height: "15", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) svg.setAttribute(name, value);
+    const shape = document.createElementNS(svg.namespaceURI, "path"); shape.setAttribute("d", path); svg.append(shape); button.prepend(svg);
+  };
+  icon(select, "m4 16-1 5 5-1L20 8l-4-4zM13 7l4 4");
+  icon(dock, "M3 4v16M8 12h13m-5-5 5 5-5 5");
+  close.setAttribute("aria-label", "关闭批注工具并清除未完成批注"); close.textContent = ""; icon(close, "m6 6 12 12M6 18 18 6");
   nav.append(brand, select, collapse, dock, close);
   const panel = document.createElement("section"); panel.hidden = true;
   const heading = document.createElement("h2"); heading.textContent = "页面批注";
@@ -33,8 +41,13 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
   screenshot.checked = !!window.__dshAnnotationDraft?.screenshot;
   label.append(screenshot, "附局部截图");
   const save = document.createElement("button"); save.textContent = "加入聊天草稿"; save.className = "primary"; save.title = "将当前批注加入聊天草稿";
-  const hint = document.createElement("small"); hint.textContent = "可连续添加多条，回到聊天后按 Enter 发送";
-  footer.append(label, save); panel.append(heading, target, comment, footer, hint);
+  const stash = document.createElement("button"); stash.textContent = "暂存"; stash.title = "暂存当前批注，稍后继续编辑";
+  const hint = document.createElement("small"); hint.textContent = "Enter 加入聊天草稿 · Shift+Enter 换行";
+  const editor = document.createElement("div");
+  const drafts = window.__dshAnnotationDraft?.notes || [];
+  const draftList = document.createElement("div"); draftList.className = "draft-list";
+  const draftHeading = document.createElement("small");
+  footer.append(label, stash, save); editor.append(target, comment, footer, hint); panel.append(heading, editor, draftHeading, draftList);
   const status = document.createElement("output"); status.setAttribute("aria-live", "polite");
   const restore = document.createElement("button"); restore.className = "restore"; restore.textContent = "批注"; restore.title = "恢复批注浮窗与未完成草稿"; restore.setAttribute("aria-label", "恢复批注浮窗"); restore.hidden = true;
   root.append(nav, panel, status, restore);
@@ -60,7 +73,7 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
   const highlight = document.createElement("div");
   highlight.style.cssText = "position:fixed;pointer-events:none;border:2px solid #666;background:#7771;z-index:2147483646;display:none";
   document.documentElement.append(highlight);
-  let selecting = false, selected, selectionEpoch = 0, dockSide = "right";
+  let selecting = false, selected = window.__dshAnnotationDraft?.selected, selectionEpoch = 0, dockSide = "right", sessionId, sessionTitle = title;
   const escape = value => CSS.escape(value);
   function selectorFor(element) {
     if (element.id && document.querySelectorAll(`#${escape(element.id)}`).length === 1) return `#${escape(element.id)}`;
@@ -96,7 +109,28 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
   function stop() { selectionEpoch++; selecting = false; select.setAttribute("aria-pressed", "false"); highlight.style.display = "none"; }
   function render() {
     nav.hidden = docked; restore.hidden = !docked; status.hidden = docked;
-    panel.hidden = docked || collapsed || !selected;
+    panel.hidden = docked || collapsed || (!selected && !drafts.length);
+    editor.hidden = !selected; target.textContent = selected?.selector || "";
+    draftHeading.hidden = !drafts.length;
+    draftHeading.textContent = `待加入聊天 · ${drafts.length} 条`;
+    draftList.replaceChildren();
+    for (const note of drafts) {
+      const row = document.createElement("div"); row.className = "draft-row";
+      const edit = document.createElement("button"); edit.className = "draft-edit"; edit.textContent = note.comment;
+      edit.title = `${note.sessionTitle || "当前会话"} · ${note.selector} · 点击编辑`; edit.disabled = save.disabled;
+      edit.setAttribute("aria-pressed", String(selected?.requestId === note.requestId));
+      edit.onclick = () => {
+        if (selected && comment.value.trim()) stage();
+        stop(); selected = drafts.find(item => item.requestId === note.requestId); comment.value = selected.comment; screenshot.checked = selected.screenshot; collapsed = false; render(); keepVisible(); comment.focus();
+        status.textContent = selected.sessionId && sessionId && selected.sessionId !== sessionId
+          ? `此批注属于「${selected.sessionTitle}」，请切回原会话并重新开启批注后再加入。`
+          : `正在编辑暂存批注 · ${selected.sessionTitle || "当前会话"}`;
+      };
+      const remove = document.createElement("button"); remove.title = "删除这条暂存批注"; remove.setAttribute("aria-label", "删除这条暂存批注"); remove.disabled = save.disabled;
+      icon(remove, "M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7m4-7v7");
+      remove.onclick = () => { drafts.splice(drafts.findIndex(item => item.requestId === note.requestId), 1); if (selected?.requestId === note.requestId) { selected = undefined; comment.value = ""; } render(); keepVisible(); (draftList.querySelector("button") || select).focus(); };
+      row.append(edit, remove); draftList.append(row);
+    }
     collapse.textContent = collapsed ? "展开" : "收起";
     collapse.title = collapsed ? "展开批注编辑区" : "收起编辑区，保留批注工具栏";
     collapse.setAttribute("aria-expanded", String(!collapsed));
@@ -106,13 +140,17 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
     if (expandedPosition) position(...expandedPosition); else keepVisible();
   }
   async function begin() {
+    if (save.disabled) return;
+    if (selected && comment.value.trim()) { stage(); comment.value = ""; }
     stop(); if (docked) restoreWindow(); collapsed = false; selected = undefined; render();
     const epoch = selectionEpoch;
     try {
       const target = await window[binding]({ action: "target" });
       if (epoch !== selectionEpoch || !host.isConnected || docked) return;
       brand.textContent = target.title; brand.title = `发送到会话：${target.title}`;
+      sessionId = target.sessionId; sessionTitle = target.title;
       selecting = true; select.setAttribute("aria-pressed", "true"); status.textContent = "";
+      status.textContent = "点击页面元素开始批注，Esc 退出选择。";
     } catch (error) { status.textContent = error.message; }
   }
   function move(event) {
@@ -128,10 +166,10 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
     if (!event.isTrusted) return;
     const element = event.composedPath().find(item => item instanceof Element);
     if (!element) return;
-    selected = describe(element); stop(); target.textContent = selected.selector; collapsed = false; render(); keepVisible(); comment.focus();
+    selected = { ...describe(element), sessionId, sessionTitle }; stop(); target.textContent = selected.selector; status.textContent = ""; collapsed = false; render(); keepVisible(); comment.focus();
   }
   function blockPointer(event) { if (selecting && !event.composedPath().includes(host)) { event.preventDefault(); event.stopImmediatePropagation(); } }
-  function keyboard(event) { if (event.key === "Escape" && !docked) { stop(); collapsed = true; render(); keepVisible(); } }
+  function keyboard(event) { if (event.key === "Escape" && !docked) { stop(); collapsed = true; render(); keepVisible(); collapse.focus(); } }
   function trusted(event, element) { try { return event.isTrusted && Event.prototype.composedPath.call(event).includes(element); } catch { return false; } }
   select.onclick = event => { if (trusted(event, select)) return selecting ? stop() : begin(); };
   collapse.onclick = () => { collapsed = !collapsed; stop(); render(); keepVisible(); };
@@ -141,7 +179,16 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
     dockSide = box.x + box.width / 2 < innerWidth / 2 ? "left" : "right";
     docked = true; render(); keepVisible(); restore.focus();
   };
-  restore.onclick = () => { restoreWindow(); (panel.hidden ? select : comment).focus(); };
+  restore.onclick = () => { restoreWindow(); (selected && !collapsed ? comment : select).focus(); };
+  function stage() {
+    const note = { ...selected, comment: comment.value.trim(), screenshot: screenshot.checked };
+    const index = drafts.findIndex(item => item.requestId === note.requestId);
+    if (index < 0) drafts.push(note); else drafts[index] = note;
+  }
+  stash.onclick = () => {
+    if (!selected || !comment.value.trim()) { status.textContent = "请先选择元素并填写批注。"; return; }
+    stage(); selected = undefined; comment.value = ""; status.textContent = "批注已暂存于本页，可编辑或删除；尚未加入聊天。"; render(); keepVisible(); select.focus();
+  };
   close.onclick = () => {
     stop(); document.removeEventListener("pointermove", move, true); document.removeEventListener("click", pick, true);
     document.removeEventListener("keydown", keyboard, true); host.remove(); highlight.remove(); delete window[key];
@@ -153,15 +200,27 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
     if (!trusted(event, control) || save.disabled) return;
     if (!selected || !comment.value.trim()) { status.textContent = "请先选择元素并填写批注。"; return; }
     save.disabled = true;
+    select.disabled = stash.disabled = true;
+    render();
     try {
       const value = { ...selected, comment: comment.value.trim(), screenshot: screenshot.checked };
       if (value.url !== location.href) throw new Error("页面已变化，请重新选择元素");
+      if (value.screenshot) {
+        if (value.shadow && (value.rect.scrollX !== scrollX || value.rect.scrollY !== scrollY)) throw new Error("页面已滚动，请重新选择元素后附截图。");
+        if (!value.shadow) {
+          const element = document.querySelector(value.selector);
+          if (!element) throw new Error("元素已变化，请重新选择后附截图。");
+          value.rect = describe(element).rect;
+        }
+      }
       host.style.visibility = "hidden";
       const result = await window[binding](value);
       status.textContent = `已加入 ${result.title} 草稿，回到聊天按 Enter 发送；可继续批注。`;
+      const index = drafts.findIndex(item => item.requestId === selected.requestId);
+      if (index >= 0) drafts.splice(index, 1);
       comment.value = ""; selected = undefined; render(); keepVisible();
     } catch (error) { status.textContent = error.message; }
-    finally { host.style.visibility = ""; save.disabled = false; }
+    finally { host.style.visibility = ""; save.disabled = select.disabled = stash.disabled = false; render(); }
   }
   save.onclick = event => saveAnnotation(event, save);
   comment.addEventListener("keydown", event => {
@@ -177,7 +236,7 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
     expandedPosition = window.__dshAnnotationDraft.position; docked = true; dockSide = window.__dshAnnotationDraft.dockSide || "right";
   }
   render(); keepVisible();
-  window[key] = { host, select: begin, binding, close: close.onclick, draft: () => ({ comment: comment.value, screenshot: screenshot.checked, collapsed, docked, dockSide,
+  window[key] = { host, select: begin, binding, close: close.onclick, draft: () => ({ comment: comment.value, screenshot: screenshot.checked, selected, notes: drafts, collapsed, docked, dockSide,
     position: docked ? expandedPosition : [host.getBoundingClientRect().x, host.getBoundingClientRect().y] }) };
   return active ? begin().then(() => ({ installed: true })) : { installed: true };
 }

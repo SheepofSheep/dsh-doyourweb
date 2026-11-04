@@ -91,8 +91,8 @@ try {
     await fiber.dispose();
     console.log("PASS: host context and browser_read discover WebMCP before DOM and allow intentional fallback.");
   } else if (process.argv[3] === "upload-policy") {
-    BrowserEngine.prototype.upload = async (_ref, args) => ({ uploaded: args.files });
-    BrowserEngine.prototype.act = async (_ref, args) => ({ steps: args.steps.length });
+    BrowserEngine.prototype.upload = async (_ref, args) => ({ uploaded: args.files, observation: args.observation, expect: args.expect });
+    BrowserEngine.prototype.act = async (_ref, args) => ({ steps: args.steps.length, observation: args.observation, expect: args.expect });
     const fiber = root.plugin(plugin); await fiber.await();
     const agent = { session: { id: "upload-session" } }, ref = "dsh-browser://runtime/1";
     const user = { id: "upload-user", source: { kind: "user" }, content: [{ type: "text", text: `Upload C:\\files\\report.txt to @[Tab](${ref})` }] };
@@ -108,6 +108,15 @@ try {
     await root.waterfall("agent/pre-step", { agent }, () => Promise.resolve({ kind: "enter", messages: [tool] }));
     await assert.rejects(tools.get("browser_act").execute({ snapshot: "current", steps: [{ op: "upload", selector: "input", files: ["C:\\secret.txt"] }] }, { agent }), /exact absolute file path/);
     const act = tools.get("browser_act");
+    const scoped = { observation: { selector: "#result", depth: 4 }, expect: { kind: "text", selector: "#result", value: "Saved", timeout: 1000 } };
+    const executed = await act.execute({ snapshot: "current", steps: [{ op: "click", selector: "#save" }], ...scoped }, { agent });
+    assert.deepEqual(executed.observation, scoped.observation, "post-action scope must reach the engine through the host schema");
+    assert.deepEqual(executed.expect, scoped.expect);
+    assert.deepEqual((await upload.execute({ ...args, ...scoped }, { agent })).expect, scoped.expect);
+    for (const invalid of [{ kind: "visible" }, { kind: "text", selector: "#result" }, { kind: "url" }, { kind: "value", selector: "input", value: "x", timeout: 8001 }]) {
+      await assert.rejects(act.execute({ snapshot: "current", steps: [{ op: "click", selector: "#save" }], expect: invalid }, { agent }), /require|8000/);
+    }
+    await assert.rejects(act.execute({ snapshot: "current", steps: [{ op: "click", selector: "#save" }], observation: { depth: 31 } }, { agent }), /30/);
     await assert.rejects(act.execute({ snapshot: "current", steps: [{ op: "drop", selector: "#drop", files: ["C:\\secret.txt"] }] }, { agent }), /exact absolute file path/);
     assert.equal((await act.execute({ snapshot: "current", steps: [{ op: "drop", selector: "#drop", files: args.files }] }, { agent })).steps, 1);
     await assert.rejects(act.execute({ snapshot: "current", steps: [{ op: "drop", selector: "#drop" }] }, { agent }), /requires files/);
