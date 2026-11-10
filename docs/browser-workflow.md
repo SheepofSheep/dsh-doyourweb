@@ -14,6 +14,20 @@
 
 README 的浏览器面板图由当前组件使用已安装 DSH 的 React/UI 图元及示例数据渲染；它不是完整 DSH 宿主截图。批注图来自真实组件与本地测试页；连接页图来自真实页面与示例配对请求。
 
+## DOM 读取与导航
+
+默认读取真实文档的 body，保留其内部普通 Shadow DOM 和 iframe 内容。`scope: "main"` 仅在存在唯一可见 main 时使用该区域，否则回退至文档 body。显式 `selector` 和 `query` 必须得到一个唯一读取根；逗号选择器本身有效，但匹配多个根时会报歧义，不会静默取第一个。可选择共同父节点或分别读取各区域。
+
+同一标签页的每次非 `cursor` DOM 读取都会生成新 snapshot 并替换旧 ID。动作和导航也会使旧快照失效。`cursor` 只分页当前已生成的快照，不替换 ID；读取其他标签页不影响当前标签页。动作必须使用该标签页最新返回的 snapshot。`omittedChars` 是当前快照文本尚未返回的字符数，不是整页遗漏字符数，也不是 token 数。例如返回 `cursor: "abcd1234:200"`、`omittedChars: 600` 时，用该 cursor 继续读剩余快照文本。
+
+导航使用 `step.value`，例如先读取当前页，再调用：
+
+```json
+{"snapshot":"<latest snapshot ID>","steps":[{"op":"navigate","value":"https://example.com"}],"observe":"summary"}
+```
+
+`url` 和 `target` 不是目标 URL 的参数别名。缺少 value 或 URL 协议不受支持时，整个动作批次会在派发前拒绝，不执行前序动作。合法的 HTTP/HTTPS 或本地 file URL 可用于导航；导航后先重新读取再执行其他动作。
+
 ## 本地诊断
 
 “打开日志”记录 `host_send → extension_receive → api_settle → extension_response → host_response` 阶段，包含关联编号、方法、时间、耗时、版本和归类错误码。最多保存 600 条，仅在本机内存保留；可停用、清空或导出。不记录命令参数、页面正文、URL、token、Cookie 或原始错误信息。重启插件后清空。
@@ -39,6 +53,12 @@ README 的浏览器面板图由当前组件使用已安装 DSH 的 React/UI 图�
 <a id="english"></a>
 
 ## English
+
+DOM reads use the actual document body, preserving its normal shadow content and iframe content. `scope: "main"` selects a unique visible main landmark, otherwise falls back to the document body. Explicit `selector` and `query` must resolve to one root. Comma selectors work with one match; multiple matches produce an ambiguity error. Choose a common parent or read each scope separately.
+
+Each new DOM read without `cursor` replaces that tab's snapshot ID. Actions and navigation also invalidate old snapshots. Cursor pagination keeps the same ID, and reading another tab does not replace this tab's snapshot. Always act with the latest ID for that tab. `omittedChars` counts remaining characters in the already-generated snapshot text, not all unread page characters or tokens. For example, `cursor: "abcd1234:200"` and `omittedChars: 600` mean that cursor continues the remaining snapshot text.
+
+For navigation, first read the current page, then use the JSON example above: the destination belongs in `step.value`. `url` and `target` are not aliases. A missing value or unsupported URL scheme rejects the entire batch before any preceding action is dispatched. HTTP/HTTPS and local file URLs are supported. Read the new page before further actions.
 
 Open **Browser** in DSH's left navigation to show the current session's right panel. **Pages**, **Apps** and **Open logs** share the panel. Selecting a page or app appends a reference to the current draft, preserving text, references and attachments. The `@` menu remains available; the human sends the draft. Without an open conversation, the panel can still list objects and open setup.
 

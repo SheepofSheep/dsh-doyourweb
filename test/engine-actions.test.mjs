@@ -6,6 +6,45 @@ import { BrowserBridge } from "../src/bridge.js";
 import { serialize } from "../src/output.js";
 import { fileURLToPath } from "node:url";
 
+test("navigate validates the whole batch before dispatch and uses value for valid URLs", async () => {
+  let clicks = 0, url = "https://example.com", epoch = 1;
+  const page = { evaluate: async () => ({ url, epoch }), title: async () => "Navigate", url: () => url,
+    locator: () => ({ ariaSnapshot: async () => "- button [ref=e1]", click: async () => { clicks++; } }),
+    goto: async target => { url = target; epoch++; } };
+  const engine = new BrowserEngine({ page: async () => page });
+  for (const step of [{ op: "navigate" }, { op: "navigate", url: "https://example.org" },
+    { op: "navigate", target: "https://example.org" }, { op: "navigate", value: " " },
+    { op: "navigate", value: "javascript:alert(1)" }]) {
+    const read = await engine.read("tab");
+    await assert.rejects(engine.act("tab", { snapshot: read.snapshot, observe: "summary",
+      steps: [{ op: "click", ref: "e1" }, step] }), /navigate.*step.value/);
+    assert.equal(clicks, 0);
+    assert.equal(url, "https://example.com");
+    assert.equal((await engine.read("tab")).lastAction.dispatch, "none");
+  }
+  const read = await engine.read("tab");
+  const result = await engine.act("tab", { snapshot: read.snapshot, observe: "summary", steps: [{ op: "navigate", value: "https://example.org" }] });
+  assert.equal(result.completed.length, 1);
+  assert.equal(url, "https://example.org");
+});
+
+test("new same-tab reads replace snapshots; cursor pages and other tabs preserve them", async () => {
+  let clicks = 0;
+  const page = { evaluate: async () => ({ url: "https://example.com", epoch: 1 }), title: async () => "Pagination",
+    locator: () => ({ ariaSnapshot: async () => "- paragraph: text\n".repeat(200), click: async () => { clicks++; } }) };
+  const engine = new BrowserEngine({ page: async () => page });
+  const old = await engine.read("tab");
+  const latest = await engine.read("tab", { limit: 400 });
+  await assert.rejects(engine.act("tab", { snapshot: old.snapshot, steps: [{ op: "click", selector: "button" }] }), /latest DOM snapshot for this tab/);
+  assert.equal(clicks, 0);
+  assert.ok(latest.omittedChars > 0);
+  assert.equal((await engine.read("tab", { cursor: latest.cursor })).snapshot, latest.snapshot);
+  await engine.read("other");
+  const result = await engine.act("tab", { snapshot: latest.snapshot, observe: "summary", steps: [{ op: "click", selector: "button" }] });
+  assert.equal(result.completed.length, 1);
+  assert.equal(clicks, 1);
+});
+
 test("ordinary post-dispatch failure persists the receipt and never replays", async () => {
   const bridge = new EventEmitter();
   let clicks = 0;
@@ -72,7 +111,7 @@ test("post-action scope stays explicit, and missing scope cannot fall back to bo
   assert.equal((await engine.read("tab")).lastAction.readError, true);
   read = await engine.read("tab", { selector: "#panel" });
   await engine.act("tab", { snapshot: read.snapshot, steps: [{ op: "click", ref: "e1" }] });
-  assert.deepEqual(scopes.at(-1), { selector: "body", depth: 8 });
+  assert.deepEqual(scopes.at(-1), { selector: "xpath=/html/body", depth: 8 });
   assert.deepEqual(scopes[1], { selector: "#gone", depth: 3 });
 });
 

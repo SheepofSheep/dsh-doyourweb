@@ -131,14 +131,21 @@ export class BrowserEngine {
     checkpoint(signal);
     const before = await this.document(page);
     if (!canControl(before.url)) throw new Error("This tab navigated to an unsupported URL");
-    let root = page.locator("body");
+    // CSS locators pierce shadow roots, which may contain additional body nodes.
+    let root = page.locator("xpath=/html/body");
     if (options.scope === "main") {
       const main = page.locator("main, [role='main']");
       if (await main.count() === 1 && await main.isVisible()) root = main;
     }
     if (options.selector) root = page.locator(options.selector);
     if (options.query) root = root.getByText(options.query, { exact: false });
-    const text = await root.ariaSnapshot({ mode: "ai", depth: options.depth || 8, timeout: 8000, signal });
+    let text;
+    try {
+      text = await root.ariaSnapshot({ mode: "ai", depth: options.depth || 8, timeout: 8000, signal });
+    } catch (error) {
+      if (!error.message?.includes("strict mode violation")) throw error;
+      throw new Error("Read scope matches multiple elements. Choose one unique root (for example their common parent), or read each scope separately. Comma selectors are supported when they resolve to one element.", { cause: error });
+    }
     const after = await this.document(page);
     checkpoint(signal);
     if (before.epoch !== after.epoch || before.url !== after.url) throw new Error("Page navigated while reading; read it again");
@@ -190,9 +197,13 @@ export class BrowserEngine {
       let document = await this.document(page);
       try {
         if (!state || options.snapshot !== state.id || document.epoch !== state.epoch || document.url !== state.url) {
-          throw new Error("Snapshot is stale. Call browser_read before acting; no actions were performed.");
+          throw new Error("Snapshot is stale. Use the latest DOM snapshot for this tab; a new read without cursor replaces it, while cursor pages and reads of other tabs do not. Call browser_read before acting; no actions were performed.");
         }
         if (state.refsAvailable === false && options.steps.some(step => step.ref || step.toRef)) throw new Error("Handle receipt withheld element refs. Read its cursor before using refs, or continue with selectors; old refs must not be reused.");
+        for (const step of options.steps) if (step.op === "navigate") {
+          if (!step.value?.trim()) throw new Error('navigate requires a URL in step.value, for example {"op":"navigate","value":"https://example.com"}; url and target are not supported. No actions were performed.');
+          if (!canControl(step.value)) throw new Error("navigate step.value must be an HTTP/HTTPS or local file URL. No actions were performed.");
+        }
         for (const [index, step] of options.steps.entries()) if (step.op === "upload" || step.op === "drop" && step.files) {
           if (!Array.isArray(step.files) || !step.files.length || step.files.length > 20) throw new Error("Upload requires 1-20 explicitly authorized absolute file paths");
           const files = [];
@@ -232,7 +243,6 @@ export class BrowserEngine {
         try {
           checkpoint(signal);
           if (step.op === "navigate") {
-            if (!canControl(step.value)) throw new Error("Only HTTP/HTTPS or local file navigation is supported");
             await invoke(() => page.goto(step.value, { waitUntil: "domcontentloaded", signal }));
           } else if (step.op === "back") await invoke(() => page.goBack({ waitUntil: "domcontentloaded", signal }));
           else if (step.op === "forward") await invoke(() => page.goForward({ waitUntil: "domcontentloaded", signal }));

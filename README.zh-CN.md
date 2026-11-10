@@ -4,7 +4,7 @@
 
 让 DeepSeek Harness 引用并操作你已经打开、保持登录的 Chrome 和 Edge 页面，用精简的页面上下文和批量操作减少重复读取。
 
-`0.2.2` 在配套扩展连接、断开或标签页变化时刷新已打开的 `@` / `/` 浏览器候选与网页侧栏，无需修改搜索词；同时修复 Windows 遇到受保护进程时整份应用列表不显示的问题，侧栏和 `@` 菜单继续列出其他正在运行的应用窗口。浏览器动作失败后保留执行证据，可用 `observation` 显式缩小后置快照，并用 `expect` 在批次末尾检查一次结果条件。保留桌面安静读取与控件分页。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
+`0.2.3` 修复页面 Shadow DOM 内含额外 body 时默认 DOM 读取报歧义的问题，保留普通 Shadow DOM 与 iframe 内容。导航批次在执行前检查 `step.value`，缺少 URL 或协议不受支持时不派发任何动作。安装连接说明补充浏览器入口、唯一读取根、快照替换与 cursor 分页。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -27,7 +27,7 @@
 
 项目由 DSH 插件和配套的 Manifest V3 浏览器扩展组成。插件接入原生 `@`、`/` 菜单，扩展提供标签页信息和控制通道。完成一次配对后，扩展会在后台重连，不必一直打开弹窗。
 
-当前版本为 **0.2.2**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
+当前版本为 **0.2.3**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
 
 ## 02 · 功能预览
 
@@ -145,7 +145,7 @@ dsh-doyourweb
 ### 构建并安装本地版本
 
 ```sh
-git clone --branch ver0.2.2 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.3 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -154,6 +154,12 @@ npm run build
 在 DSH 中打开 **插件 > 添加插件**，填入**构建完成后的项目目录绝对路径**。插件启用时会启动桥接服务，不需要另开开发服务器。
 
 ### 连接浏览器
+
+首次使用分三步：先在 DSH「插件 > 添加插件」安装 `dsh-doyourweb` 并启用；再连接浏览器配套扩展；最后在聊天中引用网页。安装插件不会自动安装或配对扩展。
+
+启用后，左导航「浏览器」打开网页侧栏，其中「连接设置」可打开配对页；也可在输入框输入 `/browser`，选择「浏览器」。扩展尚未安装或连接时，`@` 菜单仍应显示「浏览器」连接设置候选。配对成功后，侧栏或 `@网页标题` 才用于选择网页引用。
+
+若左导航和 `/browser` 候选都没有，先检查插件是否安装并启用，再完全退出 DSH（包括系统托盘）后重启；仍缺失时，反馈完整 DSH 构建号、插件版本、缺失入口位置及加载错误。若入口存在但显示「未连接」，打开连接设置并完成以下配对步骤；若显示「服务不可用」，检查插件加载错误和本地桥接服务，而非反复配对。
 
 1. 在 DSH 输入 `/browser`，打开本地连接页面。
 2. 打开 `edge://extensions` 或 `chrome://extensions`，开启开发者模式，将项目中的 `extension/` 目录作为解压后的扩展加载。

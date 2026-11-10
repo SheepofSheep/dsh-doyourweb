@@ -23,11 +23,11 @@ export const inject = ["tools", "typert"];
 const tab = z.string().optional().describe("Referenced dsh-browser:// tab. Omit if only one is selected.");
 const readArgs = z.object({ tab, mode: z.enum(["auto", "dom"]).optional(),
   scope: z.enum(["body", "main"]).optional().describe("main opts into a unique visible main landmark; default body retains navigation and dialogs."),
-  selector: z.string().optional(), query: z.string().optional(),
+  selector: z.string().optional().describe("Must resolve to one read root; comma selectors are valid only with one match. Use a common parent or separate reads for multiple roots."), query: z.string().optional(),
   depth: z.number().int().min(1).max(30).optional(), cursor: z.string().optional(),
   limit: z.number().int().min(400).max(8000).optional() });
 const stepArgs = z.object({ op: z.enum(["click", "fill", "press", "select", "check", "hover", "scroll", "navigate", "back", "forward", "wait", "extract", "upload", "drag", "drop"]),
-  ref: z.string().optional(), selector: z.string().optional(), value: z.string().optional(),
+  ref: z.string().optional(), selector: z.string().optional(), value: z.string().optional().describe("Required URL for navigate, e.g. {op:'navigate', value:'https://example.com'}. url/target are not aliases. Also supplies fill/press/select values."),
   toRef: z.string().optional(), toSelector: z.string().optional(),
   data: z.record(z.string().regex(/^[\w.+-]+\/[\w.+-]+$/).max(100), z.string().max(16000)).optional()
     .refine(value => !value || (Object.keys(value).length <= 8 && JSON.stringify(value).length <= 32000), "Drop data exceeds 32KB or 8 MIME entries"),

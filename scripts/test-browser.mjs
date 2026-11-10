@@ -136,10 +136,58 @@ try {
   assert.ok(localRead.snapshot, "local HTML can be read through CDP");
   await local.close();
   const initial = await engine.read(tab.ref);
-  const nameRef = initial.content.match(/textbox "Name" \[ref=(e\d+)\]/)?.[1];
-  const saveRef = initial.content.match(/button "Save" \[ref=(e\d+)\]/)?.[1];
+  // Synthetic extension overlays can add a body inside an open shadow root.
+  await page.evaluate(() => {
+    const overlay = document.createElement("issue-overlay"); overlay.id = "issue-overlay";
+    document.documentElement.append(overlay);
+    const shadowBody = document.createElement("body"); shadowBody.textContent = "Overlay outside document body";
+    overlay.attachShadow({ mode: "open" }).append(shadowBody);
+    const widget = document.createElement("issue-widget"); widget.id = "issue-widget"; document.body.append(widget);
+    widget.attachShadow({ mode: "open" }).innerHTML = '<button onclick="this.textContent=\'Shadow clicked\'">Shadow widget</button>';
+  });
+  assert.equal(await page.locator("body").count(), 2);
+  await assert.rejects(page.locator("body").ariaSnapshot({ mode: "ai" }), /strict mode violation/);
+  const shadowRead = await engine.read(tab.ref, { limit: 8000 });
+  assert.match(shadowRead.content, /Shadow widget/);
+  assert.match(shadowRead.content, /Frame button/);
+  assert.doesNotMatch(shadowRead.content, /Overlay outside document body/);
+  const shadowRef = shadowRead.content.match(/button "Shadow widget" \[ref=(e\d+)\]/)?.[1];
+  assert.ok(shadowRef, shadowRead.content);
+  const shadowAction = await engine.act(tab.ref, { snapshot: shadowRead.snapshot, steps: [{ op: "click", ref: shadowRef }] });
+  assert.equal(shadowAction.completed.length, 1);
+  assert.match(shadowAction.content, /Shadow clicked/);
+  assert.equal(shadowAction.readError, undefined);
+  await assert.rejects(engine.read(tab.ref, { selector: "#name, #save" }), /matches multiple elements.*unique root/);
+  assert.match((await engine.read(tab.ref, { selector: "#save, #missing" })).content, /Save/);
+  const scopedShadow = await engine.read(tab.ref, { scope: "main" });
+  assert.doesNotMatch(scopedShadow.content, /Navigation remains available/);
+  await page.evaluate(() => document.body.append(document.createElement("main")));
+  assert.match((await engine.read(tab.ref, { scope: "main" })).content, /Navigation remains available/);
+  await page.evaluate(() => document.querySelectorAll("main")[1].remove());
+  const shadowFrames = await engine.read(tab.ref, { limit: 8000 });
+  const shadowFrameRef = shadowFrames.content.match(/button "Frame button" \[ref=(f\d+e\d+)\]/)?.[1];
+  assert.ok(shadowFrameRef, shadowFrames.content);
+  const shadowFrameAction = await engine.act(tab.ref, { snapshot: shadowFrames.snapshot, steps: [{ op: "click", ref: shadowFrameRef }] });
+  assert.equal(shadowFrameAction.completed.length, 1);
+  assert.match(shadowFrameAction.content, /Frame clicked/);
+  const crossFrame = await engine.read(tab.ref, { limit: 8000 });
+  const crossRef = crossFrame.content.match(/textbox "Frame attachment" \[ref=(f\d+e\d+)\]/)?.[1];
+  // File inputs may have a different accessibility role across Chromium versions.
+  assert.match(crossFrame.content, /Frame attachment/);
+  const selectorFrame = await engine.act(tab.ref, { snapshot: crossFrame.snapshot, observe: "summary",
+    steps: [{ op: "extract", selector: "label", frame: "#upload-frame", fields: ["text"] }] });
+  assert.equal(selectorFrame.completed.length, 1);
+  assert.match(selectorFrame.results[0].rows[0].text, /Frame attachment/);
+  await page.evaluate(() => {
+    document.querySelector("#issue-overlay").remove(); document.querySelector("#issue-widget").remove();
+    document.querySelector("iframe:not(#upload-frame)").contentDocument.querySelector("button").textContent = "Frame button";
+  });
+  console.log("PASS: duplicate shadow body fails the former CSS root; document root preserves normal shadow actions, frame refs, cross-origin frame selectors, main fallback and strict explicit selectors through the real extension/CDP bridge.");
+  const currentInitial = await engine.read(tab.ref);
+  const nameRef = currentInitial.content.match(/textbox "Name" \[ref=(e\d+)\]/)?.[1];
+  const saveRef = currentInitial.content.match(/button "Save" \[ref=(e\d+)\]/)?.[1];
   assert.ok(nameRef && saveRef, initial.content);
-  const result = await engine.act(tab.ref, { snapshot: initial.snapshot, observe: "summary", steps: [
+  const result = await engine.act(tab.ref, { snapshot: currentInitial.snapshot, observe: "summary", steps: [
     { op: "fill", ref: nameRef, value: "DSH" }, { op: "click", ref: saveRef },
     { op: "wait", selector: "#out", state: "visible", timeout: 2000 },
     { op: "extract", selector: "#out", fields: ["text"] },
