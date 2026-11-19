@@ -18,7 +18,9 @@ export function typingSteps(input) {
   if (mode === "keys" && element) throw new Error("mode:keys uses the focused field or screenshot x,y; omit the UIA element target. Use mode:value to replace a UIA value.");
   if (element && target.x !== undefined) throw new Error("Choose a UIA element or screenshot coordinates, not both");
   const steps = [];
-  if (text !== undefined) steps.push({ tool: "type_text", arguments: { ...target, text } });
+  if (text !== undefined) steps.push(mode === "value"
+    ? { tool: "set_value", arguments: { ...target, value: text } }
+    : { tool: "type_text", arguments: { ...target, text } });
   if (keys) steps.push({ tool: keys.length === 1 ? "press_key" : "hotkey", arguments: {
     ...target, ...(keys.length === 1 ? { key: keys[0] } : { keys }),
   } });

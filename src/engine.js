@@ -6,6 +6,7 @@ import { canControl } from "./protocol.js";
 import { clip, serialize } from "./output.js";
 import { browserActivity } from "./activity.js";
 import { NetworkCapture } from "./network.js";
+import { CaptureStore } from "./captures.js";
 
 export function pageChunk(snapshot, offset = 0, limit = 2400) {
   if (!Number.isInteger(offset) || offset < 0 || offset > snapshot.text.length) throw new Error("Invalid snapshot cursor");
@@ -61,14 +62,15 @@ function boundedExtraction(index, data, limit) {
   return result;
 }
 
-function boundAction(result) {
+function boundAction(result, cap = 1400) {
+  const budget = Math.max(400, Math.min(8000, cap));
   for (const [object, key] of [[result.failure, "error"], [result.expectation, "error"], [result, "readError"], [result, "url"]]) {
-    while (serialize(result).length > 1400 && object?.[key]?.length > 16) {
+    while (serialize(result).length > budget && object?.[key]?.length > 16) {
       object[key] = clip(object[key], Math.floor(object[key].length / 2));
       if (key === "url") result.metadataTruncated = true;
     }
   }
-  while (serialize(result).length > 1400) {
+  while (serialize(result).length > budget) {
     const entry = result.results?.filter(entry => entry.rows?.length)
       .sort((a, b) => serialize(b).length - serialize(a).length)[0];
     if (!entry) {
@@ -83,20 +85,38 @@ function boundAction(result) {
 }
 
 export class BrowserEngine {
-  constructor(bridge, { snapshotChars = 2400, artifactDir } = {}) {
+  constructor(bridge, { snapshotChars = 2400, artifactDir, captureRetention = false } = {}) {
     this.bridge = bridge;
     this.snapshotChars = snapshotChars;
     this.artifactDir = artifactDir;
+    this.captureStore = captureRetention ? new CaptureStore(artifactDir) : undefined;
     this.states = new Map();
     this.queues = new Map();
     this.receipts = new Map();
     this.networks = new Map();
-    this.onRelease = ref => { this.states.delete(ref); this.networks.get(ref)?.close(); this.networks.delete(ref); };
+    this.actions = new Map();
+    // A released relay invalidates the snapshot, but an uncertain-effect receipt
+    // must survive it: it is the only evidence that a dispatched action may still
+    // land, and dropping it would let the next call replay the effect.
+    this.onRelease = ref => {
+      this.states.delete(ref);
+      if (!this.receipts.get(ref)?.mayHaveLateEffects) this.receipts.delete(ref);
+      this.networks.get(ref)?.close();
+      this.networks.delete(ref);
+    };
+    this.onActivityStop = (ref, reply) => {
+      const controller = this.actions.get(ref);
+      const stopped = !!controller && !controller.signal.aborted;
+      if (stopped) controller.abort(new Error("Stopped from the DoYourWeb extension"));
+      reply(stopped);
+    };
     this.bridge.on?.("release", this.onRelease);
+    this.bridge.on?.("activityStop", this.onActivityStop);
   }
 
   close() {
     this.bridge.off?.("release", this.onRelease);
+    this.bridge.off?.("activityStop", this.onActivityStop);
     this.states.clear();
     this.receipts.clear();
     for (const capture of this.networks.values()) capture.close();
@@ -105,14 +125,20 @@ export class BrowserEngine {
 
   async withPage(ref, operation, signal, active = false) {
     checkpoint(signal);
-    const page = await this.bridge.page(ref);
-    const controller = new AbortController();
-    const actionSignal = active && this.bridge.cdp ? signal ? AbortSignal.any([signal, controller.signal]) : controller.signal : signal;
+    const controller = active && this.bridge.cdp ? new AbortController() : undefined;
+    const actionSignal = controller ? signal ? AbortSignal.any([signal, controller.signal]) : controller.signal : signal;
+    if (controller) this.actions.set(ref, controller);
     let activity;
     try {
-      if (active && this.bridge.cdp) activity = await browserActivity(this.bridge, ref, controller);
-      return await operation(page, actionSignal, activity);
-    } finally { await activity?.close(); this.bridge.release?.(ref); }
+      const page = await this.bridge.page(ref);
+      checkpoint(actionSignal);
+      if (controller) activity = await browserActivity(this.bridge, ref).catch(() => {});
+      return await operation(page, actionSignal);
+    } finally {
+      if (controller) this.actions.delete(ref);
+      await activity?.close();
+      this.bridge.release?.(ref);
+    }
   }
 
   async serial(ref, operation) {
@@ -188,7 +214,7 @@ export class BrowserEngine {
   }
 
   async act(ref, options, signal) {
-    return this.serial(ref, () => this.withPage(ref, async (page, actionSignal, activity) => {
+    return this.serial(ref, () => this.withPage(ref, async (page, actionSignal) => {
       signal = actionSignal;
       checkpoint(signal);
       const state = this.states.get(ref);
@@ -250,7 +276,6 @@ export class BrowserEngine {
             await invoke(() => page.mouse.wheel(0, step.amount || 600));
           } else {
             const target = this.locator(page, step);
-            if (activity && !["wait", "extract", "upload"].includes(step.op)) await activity.pulse(target, signal).catch(() => {});
             if (step.op === "click") await invoke(() => target.click({ signal }));
             else if (step.op === "drag") {
               const destination = this.locator(page, { ref: step.toRef, selector: step.toSelector, frame: step.frame });
@@ -334,6 +359,7 @@ export class BrowserEngine {
           break;
         } finally { this.bridge.off?.("commandSent", commandSent); }
       }
+      const budget = Math.max(400, Math.min(8000, this.snapshotChars));
       const result = boundAction({ tab: ref, actionId, fromSnapshot: state.id, completed, remaining: options.steps.length - completed.length,
         ...(results.length ? { results } : {}),
         ...(failure ? { failure, retry: "Read current state first. Do not replay completed or uncertain actions." } : {}),
@@ -349,36 +375,35 @@ export class BrowserEngine {
       if (cancelled) return result;
       if (options.expect && !failure && completed.length === options.steps.length) {
         const expected = options.expect;
+        const wait = { timeout: expected.timeout || 8000, signal };
         try {
           checkpoint(signal);
-          let matched;
-          if (expected.kind === "url") matched = (await this.document(page)).url === expected.value;
+          if (expected.kind === "url") await page.waitForURL(url => url.href === expected.value, { ...wait, waitUntil: "commit" });
           else {
             const target = this.locator(page, expected);
-            if (expected.kind === "visible") {
-              await target.waitFor({ state: "visible", timeout: expected.timeout || 8000, signal });
-              matched = true;
-            } else matched = await target.evaluate((element, expected) => expected.kind === "text"
+            if (expected.kind === "visible") await target.waitFor({ state: "visible", ...wait });
+            else await target.waitForFunction((element, expected) => expected.kind === "text"
               ? (element.innerText ?? element.textContent ?? "").includes(expected.value)
               : element.type !== "password" && element.value === expected.value,
-            { kind: expected.kind, value: expected.value }, { timeout: expected.timeout || 8000, signal });
+            { kind: expected.kind, value: expected.value }, wait);
           }
-          result.expectation = { kind: expected.kind, status: matched ? "matched" : "unmet" };
+          checkpoint(signal);
+          result.expectation = { kind: expected.kind, status: "matched" };
         } catch (error) {
-          result.expectation = { kind: expected.kind, status: error.name === "TimeoutError" ? "unmet" : "error", error: clip(error.message || error, 200) };
+          result.expectation = { kind: expected.kind, status: signal?.aborted ? "cancelled" : error.name === "TimeoutError" ? "unmet" : "error", error: clip(error.message || error, 200) };
           if (signal?.aborted) { result.cancelled = true; receipt.cancelled = true; }
         }
         receipt.expectation = { kind: result.expectation.kind, status: result.expectation.status };
       }
-      if (result.cancelled) return boundAction(result);
-      if (options.observe === "summary") return boundAction(result);
+      if (result.cancelled) return boundAction(result, budget);
+      if (options.observe === "summary") return boundAction(result, budget);
       try {
         const next = await this.snapshot(ref, page, options.observation || {}, signal);
         if (options.observe === "handle") {
           next.refsAvailable = false;
-          return boundAction({ ...result, snapshot: next.id, cursor: `${next.id}:0`, url: clip(next.url, 512), title: clip(next.title, 128), refs: "read_required" });
+          return boundAction({ ...result, snapshot: next.id, cursor: `${next.id}:0`, url: clip(next.url, 512), title: clip(next.title, 128), refs: "read_required" }, budget);
         }
-        return boundedChunk(next, 0, 1600, result);
+        return boundedChunk(next, 0, budget, result);
       } catch (error) {
         if (signal?.aborted) {
           this.states.delete(ref);
@@ -386,7 +411,7 @@ export class BrowserEngine {
           return { ...result, cancelled: true };
         }
         receipt.readError = true;
-        return boundAction({ ...result, url: clip(page.url(), 256), readError: clip(error.message, 200) });
+        return boundAction({ ...result, url: clip(page.url(), 256), readError: clip(error.message, 200) }, budget);
       }
     }, signal, true));
   }
@@ -416,8 +441,9 @@ export class BrowserEngine {
     return this.serial(ref, () => this.withPage(ref, async page => {
       checkpoint(signal);
       await mkdir(this.artifactDir, { recursive: true });
-      const output = path.join(this.artifactDir, `browser-${randomUUID()}.png`);
+      const output = path.join(this.artifactDir, `dsh-capture-${randomUUID()}.png`);
       await page.screenshot({ path: output, fullPage: options.fullPage === true, animations: "disabled", signal });
+      await this.captureStore?.record(output);
       checkpoint(signal);
       return { tab: ref, url: clip(page.url(), 512), path: output, mediaType: "image/png" };
     }, signal));

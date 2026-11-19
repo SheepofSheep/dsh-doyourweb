@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
-import { AppInventory, appRefs } from "../src/apps/processes.js";
+import { spawn } from "node:child_process";
+import { AppInventory, appRefs, findExecutable } from "../src/apps/processes.js";
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { Applications } from "../src/apps/service.js";
 import { ConnectorCatalog, fingerprint, registryCandidates, validateConnector } from "../src/apps/catalog.js";
 import { McpConnection, UncertainOperation, runProcess, projectMcpResult } from "../src/apps/runtime.js";
@@ -248,7 +250,7 @@ test("failed CLI and MCP inspection cannot clear an uncertain mutation", async t
 
 test("desktop scope overrides caller pid/window and needs a fresh one-use snapshot", async t => {
   const calls = [];
-  const tools = new Map(["get_window_state", "click"].map(name => [name, { name, inputSchema: { type: "object", properties: { pid: { type: "number" }, window_id: { type: "string" } } } }]));
+  const tools = new Map(["get_window_state", "click"].map(name => [name, { name, inputSchema: { type: "object", properties: { pid: { type: "number" }, window_id: { type: "string" }, delivery_mode: { enum: ["background", "foreground"] } } } }]));
   const { service, app } = await fixture(t, { connect: () => ({ tools, catalog: () => [...tools.values()], connect: async () => {}, close: async () => {}, call: async (name, args) => { calls.push({ name, args }); return { content: [{ type: "text", text: "state" }] }; } }) });
   service.candidates.get(app.ref).set("cua-driver", { id: "cua-driver", label: "Driver", kind: "desktop", command: process.execPath, installed: true, args: [] });
   const pending = await service.connect(app.ref, "cua-driver", { session: "s" }); await service.approve(pending.plan);
@@ -267,7 +269,7 @@ test("desktop scope overrides caller pid/window and needs a fresh one-use snapsh
 
 async function desktopFixture(t, respond = async () => ({ content: [{ type: "text", text: "window controls" }] })) {
   const calls = [];
-  const properties = { pid: { type: "integer" }, window_id: { type: "integer" }, include_screenshot: { type: "boolean" }, include_accessibility_tree: { type: "boolean" }, max_elements: { type: "integer" }, max_depth: { type: "integer" }, max_dimension: { type: "integer" } };
+  const properties = { pid: { type: "integer" }, window_id: { type: "integer" }, delivery_mode: { enum: ["background", "foreground"] }, include_screenshot: { type: "boolean" }, include_accessibility_tree: { type: "boolean" }, max_elements: { type: "integer" }, max_depth: { type: "integer" }, max_dimension: { type: "integer" } };
   const tools = new Map(["get_window_state", "click", "double_click", "right_click", "scroll", "drag"].map(name => [name, { name, inputSchema: { type: "object", properties } }]));
   const f = await fixture(t, { connect: () => ({ tools, catalog: () => [...tools.values()], connect: async () => {}, close: async () => {}, call: async (name, args, options) => { calls.push({ name, args, options }); return respond(name, args); } }) });
   f.service.candidates.get(f.app.ref).set("cua-driver", { id: "cua-driver", label: "Driver", kind: "desktop", command: process.execPath, installed: true, args: [] });
@@ -352,6 +354,34 @@ test("desktop control pages and exact-name actions reuse the same driver snapsho
   await service.desktop(app.ref, { snapshot: state.snapshot, tool: "click", arguments: { element: { name: "搜索商店" } } }, exec);
   assert.equal(calls[1].args.element_token, "s0000000d:13");
   await assert.rejects(service.desktop(app.ref, { tool: "not_a_tool" }, exec), /Allowed operations and parameters/);
+});
+
+test("desktop dispatch probes only the selected window and checks it again after foreground confirmation", async t => {
+  const { service, app, exec, calls, row } = await desktopFixture(t);
+  let scans = 0, probes = 0;
+  service.inventory.inventory = async () => { scans++; return [row]; };
+  service.inventory.inspect = async selected => {
+    probes++;
+    if (selected.started === row.started) return { ...selected, ...row };
+  };
+  const state = await service.desktop(app.ref, { foreground: false }, exec);
+  assert.equal(probes, 1);
+  await service.desktop(app.ref, { tool: "controls", snapshot: state.snapshot }, exec);
+  assert.equal(probes, 2);
+  assert.equal(calls.length, 1, "paging never invokes the desktop driver");
+  const input = { tool: "click", snapshot: state.snapshot };
+  assert.equal((await service.desktop(app.ref, input, exec)).completed, 1);
+  assert.equal(probes, 3, "background dispatch uses one current-window check");
+  const next = await service.desktop(app.ref, { foreground: false }, exec);
+  service.ask = async ({ questions }) => {
+    row.started = "reused-pid";
+    return { answers: [{ id: questions[0].id, selected: ["允许"] }] };
+  };
+  const refused = await service.desktop(app.ref, { ...input, snapshot: next.snapshot, foreground: true }, { ...exec, agent: {} });
+  assert.equal(refused.status, "window_unavailable");
+  assert.equal(probes, 6, "foreground dispatch probes before and after asking");
+  assert.equal(scans, 0);
+  assert.deepEqual(calls.map(call => call.name), ["get_window_state", "click", "get_window_state"]);
 });
 
 test("background refusal preserves an unconsumed snapshot without an uncertainty lock", async t => {
@@ -596,6 +626,186 @@ test("annotations go straight to a conversation with no plugin files or annotati
   await notes.close();
 });
 
+test("an async MCP input schema is refused instead of crashing the host process", () => {
+  // `$async: true` compiles into a validator that returns a Promise. Treating that
+  // Promise as a boolean skipped validation and left an unhandled rejection, which
+  // terminates the DSH host process on the first call to such a tool.
+  const connection = new McpConnection({ kind: "mcp", command: process.execPath, args: [] });
+  connection.tools = new Map([["evil", { name: "evil",
+    inputSchema: { type: "object", $async: true, properties: { value: { type: "number" } }, required: ["value"] } }]]);
+  assert.throws(() => connection.validate("evil", { value: "not-a-number" }), /async input schema/);
+  // A synchronous schema still validates and still rejects bad arguments.
+  connection.tools = new Map([["ok", { name: "ok", inputSchema: { type: "object", properties: { value: { type: "number" } }, required: ["value"] } }]]);
+  assert.throws(() => connection.validate("ok", { value: "not-a-number" }), /Invalid MCP arguments/);
+  assert.doesNotThrow(() => connection.validate("ok", { value: 1 }));
+});
+
+test("a server-declared read-only hint cannot clear a receipt from another channel", async t => {
+  const { service, app } = await fixture(t, { run: async () => ({ exitCode: 0, stdout: "ok" }) });
+  const pending = await service.connect(app.ref, "fixture-cli", { session: "s" });
+  const connected = await service.approve(pending.plan);
+  const connection = service.connections.get(connected.connection);
+  // A desktop action left an uncertain receipt behind.
+  service.receipts.set(app.ref, { kind: "desktop", mayHaveEffects: true });
+  connection.candidate.kind = "mcp";
+  connection.transport = { tools: new Map([["inspect", { annotations: { readOnlyHint: true } }]]),
+    call: async () => ({ isError: false, content: [{ type: "text", text: "fine" }] }), close: async () => {} };
+  await service.call(app.ref, { connection: connected.connection, tool: "inspect" }, { session: "s" });
+  assert.equal(service.receipts.get(app.ref)?.mayHaveEffects, true,
+    "an MCP read must not release a desktop receipt");
+  // The same server may still clear its own MCP receipt.
+  service.receipts.set(app.ref, { kind: "mcp", connection: connected.connection, mayHaveEffects: true });
+  await service.call(app.ref, { connection: connected.connection, tool: "inspect" }, { session: "s" });
+  assert.equal(service.receipts.has(app.ref), false, "an MCP read clears its own MCP receipt");
+  service.receipts.set(app.ref, { kind: "mcp", connection: "other-connection", mayHaveEffects: true });
+  await service.call(app.ref, { connection: connected.connection, tool: "inspect" }, { session: "s" });
+  assert.equal(service.receipts.has(app.ref), true, "another MCP connection cannot clear the receipt");
+});
+
+test("async compiled validators are refused and unexpected Promise rejections are consumed", async () => {
+  const connection = new McpConnection({});
+  connection.tools.set("validate", { inputSchema: { type: "object" } });
+  let called = false;
+  const compiled = () => { called = true; return Promise.reject(new Error("invalid")); }; compiled.$async = true;
+  connection.validators.set("validate", compiled);
+  assert.throws(() => connection.validate("validate", {}), /async input schema/);
+  assert.equal(called, false);
+  connection.validators.set("validate", () => Promise.reject(new Error("invalid")));
+  assert.throws(() => connection.validate("validate", {}), /asynchronous/);
+  await new Promise(resolve => setImmediate(resolve));
+});
+
+test("standard MCP argument errors do not claim an uncertain execution", async () => {
+  const connection = new McpConnection({});
+  connection.tools.set("check", { inputSchema: { type: "object" } });
+  connection.client.callTool = async () => { throw new McpError(ErrorCode.InvalidParams, "unsupported argument"); };
+  await assert.rejects(connection.call("check", {}), error => error instanceof McpError && !(error instanceof UncertainOperation));
+});
+
+test("revoking an installed MCP stops its active call and requires approval for that app only", async t => {
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const { service, app, candidate, row } = await fixture(t, { connect: () => ({
+    connect: async () => {}, close: async () => {}, catalog: () => [], tools: new Map(),
+    call: async (_tool, _args, { signal }) => { entered(); await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); },
+  }) });
+  candidate.kind = "mcp"; await service.discover(app.ref);
+  const connected = await service.connect(app.ref, candidate.id, { session: "s" });
+  const running = service.call(app.ref, { connection: connected.connection, tool: "wait" }, { session: "s" });
+  const stopped = assert.rejects(running, /revoked/); await started;
+  await service.revoke(connected.connection); await stopped;
+  assert.equal((await service.connect(app.ref, candidate.id, { session: "s" })).status, "pending_approval");
+  const second = { ...row, pid: 55, windowId: "999", path: "C:\\Other.exe" };
+  service.inventory.inventory = async () => [row, second];
+  const other = (await service.inventory.list("", undefined, true)).find(value => value.pid === 55);
+  await service.discover(other.ref);
+  assert.equal((await service.connect(other.ref, candidate.id, { session: "s" })).status, "connected");
+});
+
+test("removing a connector closes it and deletes its approvals and pending plans", async t => {
+  const { service, app, candidate } = await fixture(t);
+  await service.saveConnector(candidate); await service.discover(app.ref);
+  const pending = await service.connect(app.ref, candidate.id, { session: "s" });
+  await service.approve(pending.plan);
+  const another = await service.connect(app.ref, candidate.id, { session: "pending" });
+  await service.removeConnector(candidate.id);
+  assert.equal(service.connections.size, 0); assert.equal(service.settings.connectors.length, 0);
+  assert.equal(Object.keys(service.settings.approved).length, 0);
+  if (another.plan) assert.equal(service.plans.get(another.plan).status, "cancelled");
+});
+
+test("corrupt settings recover safely and queued writes produce a complete settings document", async t => {
+  const { service, home } = await fixture(t);
+  await writeFile(path.join(home, "applications.json"), '{"connectors":'); await service.load();
+  assert.match(service.state().settingsError, /Could not load/);
+  await writeFile(path.join(home, "applications.json"), '{"connectors":{},"approved":[]}'); await service.load();
+  assert.equal(service.settings.askBeforeInstall, true);
+  const first = service.setPolicy({ askBeforeInstall: false, trustedPublishers: ["fixture"] });
+  const second = service.setPolicy({ askBeforeInstall: true, trustedPublishers: [] });
+  await Promise.all([first, second]);
+  assert.equal(JSON.parse(await readFile(path.join(home, "applications.json"), "utf8")).askBeforeInstall, true);
+  assert.deepEqual((await readdir(home)).filter(file => file.endsWith(".tmp")), []);
+});
+
+test("PATH lookup skips empty and relative entries and rejects relative command paths", async t => {
+  const { home } = await fixture(t), previousPath = process.env.PATH;
+  const filename = `dsh-relative-${Date.now()}`;
+  await mkdir(path.join(home, "bin")); await writeFile(path.join(home, "bin", filename), "");
+  process.env.PATH = `${path.delimiter}relative${path.delimiter}${path.join(home, "bin")}`;
+  try {
+    assert.equal(await findExecutable(`bin/${filename}`), undefined);
+    assert.equal(await findExecutable(filename), path.join(home, "bin", filename));
+  } finally { process.env.PATH = previousPath; }
+});
+
+test("discovery preserves digits in application names", async () => {
+  const catalog = new ConnectorCatalog({ find: async () => undefined, fetcher: async () => ({ ok: true, text: async () => "{}" }) });
+  assert.equal((await catalog.discover({ name: "7-Zip.exe" }, { mcpOnly: true })).query, "7-Zip");
+  assert.equal((await catalog.discover({ name: "1Password.exe" }, { mcpOnly: true })).query, "1Password");
+});
+
+test("desktop deadline includes preparing the selected window", async t => {
+  const { service, app, exec, calls } = await desktopFixture(t);
+  service.inventory.ensureWindow = async (_ref, signal) => new Promise((_, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  });
+  const started = Date.now();
+  await assert.rejects(service.desktop(app.ref, { timeout: 30 }, exec), /timeout/i);
+  assert.ok(Date.now() - started < 500); assert.equal(calls.length, 0);
+});
+
+test("timed-out CLI removes its own child tree and leaves unrelated processes running", async t => {
+  const { home } = await fixture(t), marker = path.join(home, "child.pid");
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { windowsHide: true, stdio: "ignore" });
+  t.after(() => unrelated.kill());
+  const source = "const{spawn}=require('node:child_process');spawn(process.execPath,['-e',\"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000)\",process.argv[1]],{stdio:'ignore'});setInterval(()=>{},1000)";
+  await assert.rejects(runProcess(process.execPath, ["-e", source, marker], { timeout: 1200 }), UncertainOperation);
+  const pid = Number(await readFile(marker, "utf8"));
+  assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  assert.equal(process.kill(unrelated.pid, 0), true);
+});
+
+test("explicit value typing uses the upstream set_value schema without delivery_mode", async t => {
+  const { service, app, exec, calls, tools } = await desktopFixture(t, async () => ({
+    structuredContent: { snapshot_id: "s00000001", elements: [{ element_index: 1, role: "Edit", label: "Name" }] }, content: [],
+  }));
+  tools.set("set_value", { name: "set_value", inputSchema: { type: "object", additionalProperties: false, required: ["pid", "value"], properties: {
+    pid: { type: "integer" }, window_id: { type: "integer" }, value: { type: "string" }, element_index: { type: "integer" }, snapshot_id: { type: "string" },
+  } } });
+  const validation = new McpConnection({}); validation.tools = tools;
+  const connection = [...service.connections.values()][0]; connection.transport.validate = validation.validate.bind(validation);
+  const state = await service.desktop(app.ref, {}, exec);
+  await service.type(app.ref, { mode: "value", text: "replacement", element_index: 1, snapshot: state.snapshot }, exec);
+  assert.equal(calls.at(-1).name, "set_value"); assert.equal(calls.at(-1).args.value, "replacement");
+  assert.equal(calls.at(-1).args.delivery_mode, undefined);
+});
+
+test("Windows MCP cmd transport closes its tree on revoke and cancelled initialization", { skip: process.platform !== "win32" }, async t => {
+  const { service, home, app, candidate } = await fixture(t);
+  const script = path.join(home, "stdio-tree.mjs"), command = path.join(home, "stdio-tree.cmd");
+  const fixtureUrl = pathToFileURL(fileURLToPath(new URL("./fixtures/app-mcp.mjs", import.meta.url))).href;
+  await writeFile(script, `import {spawn} from 'node:child_process';import {writeFile} from 'node:fs/promises';
+const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{windowsHide:true,stdio:'ignore'});
+await new Promise(resolve=>child.once('spawn',resolve));await writeFile(process.argv[2],JSON.stringify([process.pid,child.pid]));
+if(process.argv[3]==='hang') await new Promise(resolve=>setTimeout(resolve,10000));await import(${JSON.stringify(fixtureUrl)});`);
+  await writeFile(command, `@"${process.execPath}" "${script}" %*\r\n`);
+  const unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { windowsHide: true, stdio: "ignore" });
+  t.after(() => unrelated.kill());
+  candidate.kind = "mcp"; candidate.command = command; candidate.args = [path.join(home, "connected.json")];
+  await service.discover(app.ref);
+  const connected = await service.connect(app.ref, candidate.id, { session: "s" });
+  const connection = service.connections.get(connected.connection), rootPid = connection.transport.transport.pid;
+  const owned = JSON.parse(await readFile(candidate.args[0], "utf8"));
+  await service.revoke(connected.connection);
+  await Promise.all([connection.transport.close(), connection.transport.close()]);
+  for (const pid of [rootPid, ...owned]) assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  const marker = path.join(home, "cancelled.json"), cancelled = new McpConnection({ command, args: [marker, "hang"] });
+  await assert.rejects(cancelled.connect(AbortSignal.timeout(800)));
+  await cancelled.close();
+  for (const pid of JSON.parse(await readFile(marker, "utf8"))) assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  assert.equal(process.kill(unrelated.pid, 0), true);
+});
+
 test("annotation targets reject stale client updates and ambiguous conversations", () => {
   const notes = new Annotations({});
   notes.currentSession({ client: "a", revision: 2, sessionId: "new", title: "New", active: true });
@@ -607,9 +817,28 @@ test("annotation targets reject stale client updates and ambiguous conversations
   assert.equal(notes.target("tab").sessionId, "new");
 });
 
+test("two conversations in one window stay distinct annotation targets", () => {
+  // Both conversations publish with the same window-scoped client id and a shared
+  // revision counter. Keying only by client kept the last publisher, so an
+  // annotation could silently land in the wrong conversation and the ambiguity
+  // guard could never fire.
+  const notes = new Annotations({});
+  notes.currentSession({ client: "w", revision: 1, sessionId: "one", title: "One", active: true });
+  notes.currentSession({ client: "w", revision: 2, sessionId: "two", title: "Two", active: true });
+  assert.equal(notes.clients.size, 2, "each conversation keeps its own entry");
+  assert.throws(() => notes.target("tab"), /多个 DSH/, "two active conversations stay ambiguous");
+  notes.bind("tab", { sessionId: "one", title: "One" });
+  assert.equal(notes.target("tab").sessionId, "one", "an explicit binding resolves the ambiguity");
+  notes.currentSession({ client: "w", revision: 3, sessionId: "two", title: "Two", active: false });
+  assert.equal(notes.target("tab").sessionId, "one", "closing one conversation must not deactivate the other");
+  notes.currentSession({ client: "w", revision: 2, sessionId: "stale", title: "Stale", active: true });
+  assert.equal(notes.clients.has("w:stale"), false, "a stale revision from the same window is still rejected");
+});
+
+
 test("annotation page metadata cannot grant extra app/tab targets and failed delivery reports an error", async () => {
   const extraRefs = "dsh-app://00000000-0000-0000-0000-000000000000/123456789012345678901234 dsh-browser://foreign/2";
-  const value = { comment: `Fix ${extraRefs}`, selector: "#save", url: "https://example.com", text: extraRefs };
+  const value = { comment: "Fix this button", selector: "#save", url: "https://example.com", text: extraRefs };
   const notes = new Annotations({}, { submit: async request => { assert.equal(appRefs(request.content[0].text).length, 0); assert.equal(request.content[0].text.includes("dsh-browser://foreign/2"), false); return { accepted: false }; } });
   await assert.rejects(notes.send("dsh-browser://fixture/1", { url: () => value.url }, value, { sessionId: "s" }), /did not accept/);
   await assert.rejects(notes.send("tab", { url: () => "https://changed.example" }, value, { sessionId: "s" }), /Document changed/);
@@ -631,9 +860,9 @@ test("management API rejects cross-origin, missing key and wrong content type", 
   const base = `http://127.0.0.1:${bridge.port}`;
   const post = headers => fetch(`${base}/manage/api`, { method: "POST", headers, body: '{"action":"state"}' });
   assert.equal((await post({ "Content-Type": "application/json" })).status, 403);
-  assert.equal((await post({ "Content-Type": "application/json", "X-DSH-Key": bridge.setupKey, Origin: "https://evil.example" })).status, 403);
-  assert.equal((await post({ "Content-Type": "text/plain", "X-DSH-Key": bridge.setupKey })).status, 403);
-  assert.deepEqual(await (await post({ "Content-Type": "application/json", "X-DSH-Key": bridge.setupKey, Origin: base })).json(), { action: "state" });
+  assert.equal((await post({ "Content-Type": "application/json", "X-DSH-Key": bridge.approval.exchange(bridge.approval.invite("manage"), "manage"), Origin: "https://evil.example" })).status, 403);
+  assert.equal((await post({ "Content-Type": "text/plain", "X-DSH-Key": bridge.approval.exchange(bridge.approval.invite("manage"), "manage") })).status, 403);
+  assert.deepEqual(await (await post({ "Content-Type": "application/json", "X-DSH-Key": bridge.approval.exchange(bridge.approval.invite("manage"), "manage"), Origin: base })).json(), { action: "state" });
   const page = await fetch(`${base}/manage`); assert.match(page.headers.get("content-security-policy"), /frame-ancestors 'none'/);
   const { html } = managementPage("fixture"); new vm.Script(html.match(/<script nonce="[^"]+">([\s\S]*)<\/script>/)[1]);
 });

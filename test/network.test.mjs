@@ -38,6 +38,11 @@ test("network capture is opt-in, bounded, paginated and stores metadata only", a
   assert.equal((await engine.network("tab")).requests.length, 0);
   bridge.emit("release", "tab");
   assert.equal(page.listenerCount("request"), 0); assert.equal(engine.networks.size, 0);
+  const reconnected = await engine.network("tab");
+  assert.equal(reconnected.capturing, false, "reconnection does not restart a discarded capture");
+  assert.equal(reconnected.capturingSince, null);
+  assert.deepEqual(reconnected.requests, []);
+  assert.match(reconnected.note, /Not recording/);
   engine.close();
 });
 

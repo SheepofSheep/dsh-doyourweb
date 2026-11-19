@@ -1,0 +1,92 @@
+:root {
+  color-scheme: light dark;
+  --ink: #242424;
+  --muted: #595959;
+  --ground: #fff;
+  --soft: #f3f3f3;
+  --line: #ddd;
+  --control: #b8b8b8;
+  --focus: #0066cc;
+  --error: #a22330;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 364px;
+  max-width: 100%;
+  margin: 0;
+  padding: 16px;
+  font: 13px/1.55 "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  color: var(--ink);
+  background: var(--ground);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 16px;
+}
+
+h1, p { margin: 0; }
+h1 { font-size: 17px; font-weight: 650; }
+.connection-toggle { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.connection-toggle input { margin: 0; accent-color: var(--ink); }
+output, .hint { color: var(--muted); font-size: 12px; }
+output { flex-basis: 100%; overflow-wrap: anywhere; }
+output[data-state="error"] { color: var(--error); }
+
+button, input { font: inherit; color: var(--ink); }
+button {
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 1px solid var(--control);
+  border-radius: 5px;
+  background: var(--ground);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: var(--soft); }
+button:disabled { opacity: .55; cursor: default; }
+:is(button, input, summary):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.primary { background: var(--ink); color: var(--ground); border-color: var(--ink); font-weight: 600; }
+.primary:hover:not(:disabled) { background: var(--ink); opacity: .85; }
+
+details { min-width: 0; }
+summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--muted); }
+summary:hover { color: var(--ink); }
+input:not([type="checkbox"]) {
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 1px solid var(--control);
+  border-radius: 5px;
+  background: var(--ground);
+}
+#port { width: 80px; }
+.connection-settings { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.connection-settings .row, #file-access, #setup { margin-top: 8px; }
+
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.utility-actions button { flex: 1 1 auto; }
+.quiet { margin-top: 5px; padding-inline: 0; border-color: transparent; color: var(--muted); }
+#pairing { margin: 12px 0 0; padding: 10px; background: var(--soft); border-radius: 5px; }
+#code { display: block; margin-top: 4px; font-size: 22px; letter-spacing: .12em; }
+[hidden] { display: none !important; }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #eee;
+    --muted: #bcbcbc;
+    --ground: #202020;
+    --soft: #2b2b2b;
+    --line: #424242;
+    --control: #747474;
+    --focus: #82b5ff;
+    --error: #ffa4ad;
+  }
+}

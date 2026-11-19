@@ -7,6 +7,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { clip } from "../output.js";
 import { driverData, controlPage } from "./desktop.js";
 
@@ -14,10 +15,30 @@ export class UncertainOperation extends Error {
   constructor(message, cause) { super(message, { cause }); this.mayHaveEffects = true; }
 }
 
+function stopWindowsTree(pid) {
+  return new Promise(resolve => {
+    const killer = spawn(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"), ["/pid", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore", shell: false });
+    killer.once("error", () => resolve(false)); killer.once("close", code => resolve(code === 0));
+  });
+}
+
+class OwnedStdioTransport extends StdioClientTransport {
+  close() {
+    // Capture only the transport's current child, before SDK close clears its handle.
+    // This also covers SDK cleanup on a failed/cancelled initial handshake.
+    return this.closing ||= (async () => {
+      const child = this._process;
+      const pid = child?.exitCode === null && child.signalCode === null ? this.pid : undefined;
+      if (process.platform === "win32" && pid) await stopWindowsTree(pid);
+      await super.close();
+    })();
+  }
+}
+
 export function runProcess(command, args = [], { cwd, env, signal, timeout = 30000, maxChars = 12000 } = {}) {
   if (signal?.aborted) return Promise.reject(signal.reason || new Error("Cancelled"));
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env: { ...getDefaultEnvironment(), ...env }, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, { cwd, env: { ...getDefaultEnvironment(), ...env }, windowsHide: true, detached: process.platform !== "win32", shell: false, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", truncated = false, failed;
     const append = key => chunk => {
       const text = chunk.toString("utf8");
@@ -27,7 +48,17 @@ export function runProcess(command, args = [], { cwd, env, signal, timeout = 300
       else stderr += text.slice(0, remaining);
     };
     child.stdout?.on("data", append("stdout")); child.stderr?.on("data", append("stderr"));
-    const cancel = reason => { failed ||= new UncertainOperation(reason); child.kill(); cleanup(); reject(failed); };
+    const cancel = reason => {
+      if (failed) return;
+      failed = new UncertainOperation(reason); cleanup();
+      // Only target the child we launched and its descendants, never a command name.
+      if (child.pid && process.platform === "win32") {
+        stopWindowsTree(child.pid).then(stopped => { if (!stopped) child.kill(); reject(failed); });
+      } else {
+        if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); } }
+        reject(failed);
+      }
+    };
     const abort = () => cancel("Command cancelled after dispatch; inspect the application before retrying or changing channels");
     const timer = setTimeout(() => cancel("Command timed out after dispatch; inspect the application before retrying or changing channels"), timeout);
     timer.unref(); signal?.addEventListener("abort", abort, { once: true });
@@ -46,11 +77,11 @@ export function runProcess(command, args = [], { cwd, env, signal, timeout = 300
 }
 
 export class McpConnection {
-  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: "0.2.3" }); }
+  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: "0.2.4" }); }
   async connect(signal) {
     const c = this.candidate;
     if (c.url) this.transport = new StreamableHTTPClientTransport(new URL(c.url), { requestInit: { headers: c.headers || {}, redirect: "error" } });
-    else this.transport = new StdioClientTransport({ command: c.command, args: c.args || [], cwd: c.cwd,
+    else this.transport = new OwnedStdioTransport({ command: c.command, args: c.args || [], cwd: c.cwd,
       env: { ...getDefaultEnvironment(), ...c.env }, stderr: "pipe", maxBufferSize: 8 * 1024 * 1024 });
     this.transport.stderr?.on("data", () => {});
     try {
@@ -82,13 +113,26 @@ export class McpConnection {
   validate(name, args = {}) {
     const definition = this.tools.get(name); if (!definition) throw new Error("Tool is not in the connected MCP catalog");
     let validate = this.validators.get(name);
-    if (!validate) { validate = new Ajv({ strict: false, validateFormats: false, ownProperties: true }).compile(definition.inputSchema); this.validators.set(name, validate); }
-    if (!validate(args)) throw new Error(`Invalid MCP arguments: ${JSON.stringify(validate.errors)}`);
+    if (!validate) {
+      validate = new Ajv({ strict: false, validateFormats: false, ownProperties: true }).compile(definition.inputSchema);
+      if (validate.$async) throw new Error("MCP tool declares an async input schema, which is not supported");
+      this.validators.set(name, validate);
+    }
+    if (validate.$async) throw new Error("MCP tool declares an async input schema, which is not supported");
+    const verdict = validate(args);
+    if (verdict && typeof verdict.then === "function") {
+      Promise.resolve(verdict).catch(() => {});
+      throw new Error("MCP tool input schema is asynchronous; arguments cannot be validated synchronously");
+    }
+    if (!verdict) throw new Error(`Invalid MCP arguments: ${JSON.stringify(validate.errors)}`);
   }
   async call(name, args = {}, { signal, timeout = 30000 } = {}) {
     this.validate(name, args);
     try { return await this.client.callTool({ name, arguments: args }, undefined, { signal, timeout }); }
-    catch (error) { throw new UncertainOperation("MCP call failed after dispatch; inspect current state before repeating or using another channel", error); }
+    catch (error) {
+      if (error instanceof McpError && [ErrorCode.ParseError, ErrorCode.InvalidRequest, ErrorCode.MethodNotFound, ErrorCode.InvalidParams].includes(error.code)) throw error;
+      throw new UncertainOperation("MCP call failed after dispatch; inspect current state before repeating or using another channel", error);
+    }
   }
   async close() { await this.client.close().catch(() => {}); }
 }

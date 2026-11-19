@@ -37,6 +37,20 @@ const server = createServer((req, response) => {
     response.end('<script>document.modelContext.registerTool({name:"child_only",description:"Excluded child tool",execute:()=>"child"});</script>');
     return;
   }
+  if (req.url === "/activity" || req.url === "/activity-next") {
+    response.setHeader("Content-Type", "text/html");
+    response.end(`<!doctype html><title>Browser activity fixture</title>
+      <button id="save-later" style="position:fixed;top:16px;right:16px;width:180px;height:40px">Save later</button>
+      <output id="status"></output><input id="value"><input id="password" type="password" value="hidden">
+      <script>let clicks = 0; document.querySelector('#save-later').onclick = () => {
+        clicks++; setTimeout(() => {
+          document.querySelector('#status').textContent = 'Saved';
+          document.querySelector('#value').value = 'saved';
+          history.pushState({}, '', '/activity?done=1');
+        }, 350);
+      };</script>`);
+    return;
+  }
   response.setHeader("Content-Type", "text/html");
   response.end(req.url === "/frame" ? '<button onclick="this.textContent=\'Frame clicked\'">Frame button</button>' : `<!doctype html><html><title>DSH Browser Test</title><link rel="icon" href="/favicon.png"><nav>Navigation remains available</nav><main><h1>Browser test</h1><label>Name <input id="name"></label><label><input type="checkbox" id="enabled">Enabled</label><button id="save">Save</button><output id="out"></output><input type="file" id="hidden-file" hidden><button id="choose" onclick="document.querySelector('#hidden-file').click()">Choose attachment</button><button id="soft" onclick="history.pushState({},'', '?panel=2#new');document.querySelector('#out').textContent='New panel'">Soft route</button></main><iframe src="/frame"></iframe><iframe id="upload-frame" src="${uploadUrl}"></iframe><script>document.querySelector('#save').onclick=()=>document.querySelector('#out').textContent='Saved '+document.querySelector('#name').value;</script></html>`);
 });
@@ -71,7 +85,13 @@ async function waitForPairing() {
   while (Date.now() < deadline) {
     const [request] = bridge.pairings.list();
     if (request) {
-      assert.equal(bridge.approvePairing(request.id), true);
+      const setup = await browser.newPage();
+      try {
+        await setup.goto(bridge.approvalUrl("setup"));
+        const form = setup.locator("form").filter({ has: setup.locator(`input[name=id][value="${request.id}"]`) });
+        await Promise.all([setup.waitForNavigation(), form.locator("button[value=allow]").click()]);
+        assert.equal(bridge.pairings.list().some(entry => entry.id === request.id), false);
+      } finally { await setup.close(); }
       return request;
     }
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -102,6 +122,11 @@ async function waitForTab(url = `${fixtureUrl}/`) {
     } catch (error) { return { error: error.message, cachedIcon: !!tab.favIconUrl }; }
   }));
   assert.fail("Extension should connect and publish existing tabs with local cached icons");
+}
+
+function findAnnotationToolbar(node) {
+  return node.attributes?.includes("data-dsh-annotation") ? node
+    : [...(node.children || []), ...(node.shadowRoots || [])].map(findAnnotationToolbar).find(Boolean);
 }
 
 try {
@@ -388,19 +413,54 @@ try {
     await mkdir(process.env.DSH_TEST_ARTIFACTS, { recursive: true });
     await page.screenshot({ path: path.join(process.env.DSH_TEST_ARTIFACTS, "browser-activity.png") });
   }
-  const activityCDP = bridge.cdp(tab.ref);
-  const { root: activityDocument } = await activityCDP.send("DOM.getDocument", { depth: -1, pierce: true });
-  const findActivity = node => node.attributes?.includes("data-dsh-activity") ? node
-    : [...(node.children || []), ...(node.shadowRoots || [])].map(findActivity).find(Boolean);
-  const activityHost = findActivity(activityDocument);
-  const { nodeId: stopId } = await activityCDP.send("DOM.querySelector", { nodeId: activityHost.shadowRoots[0].nodeId, selector: "button" });
-  const { model: stopBox } = await activityCDP.send("DOM.getBoxModel", { nodeId: stopId });
-  await page.mouse.click((stopBox.content[0] + stopBox.content[4]) / 2, (stopBox.content[1] + stopBox.content[5]) / 2);
-  const stopped = await stopping; await activityCDP.detach();
+  const stopPopup = await browser.newPage();
+  await stopPopup.goto(`chrome-extension://${bridge.id}/popup.html`);
+  await page.bringToFront();
+  const stopCurrent = () => stopPopup.evaluate(() => chrome.runtime.sendMessage({ type: "stop-operation" }));
+  assert.equal((await stopCurrent()).stopped, true);
+  const stopped = await stopping;
   assert.equal(stopped.cancelled, true, JSON.stringify(stopped));
   assert.ok(stopped.completed.length <= 1); assert.equal(await page.locator("#name").inputValue(), "");
-  assert.equal(await page.locator("[data-dsh-activity]").count(), 0, "stopping removes the private controls");
-  console.log("PASS: local-path uploads into hidden inputs, custom file chooser and cross-origin iframe, batch upload/fill/submit, handle refs, optional main, SPA selectors and live HUD stop cancellation.");
+  assert.equal(await page.locator("[data-dsh-activity]").count(), 0, "stopping removes the activity indicator");
+  for (const [expect, status] of [
+    [{ kind: "text", selector: "#status", value: "Saved", timeout: 1500 }, "matched"],
+    [{ kind: "value", selector: "#value", value: "saved", timeout: 1500 }, "matched"],
+    [{ kind: "url", value: `${fixtureUrl}/activity?done=1`, timeout: 1500 }, "matched"],
+    [{ kind: "text", selector: "#status", value: "Never shown", timeout: 450 }, "unmet"],
+    [{ kind: "value", selector: "#password", value: "hidden", timeout: 450 }, "unmet"],
+    [{ kind: "url", value: `${fixtureUrl}/activity?done=*`, timeout: 450 }, "unmet"],
+  ]) {
+    await page.goto(`${fixtureUrl}/activity`);
+    const activityRead = await engine.read(tab.ref);
+    const start = performance.now();
+    const result = await engine.act(tab.ref, { snapshot: activityRead.snapshot, observe: "summary", expect,
+      steps: [{ op: "click", selector: "#save-later" }] });
+    const ms = Math.round(performance.now() - start);
+    assert.equal(result.expectation.status, status, JSON.stringify(result));
+    assert.equal(result.completed.length, 1);
+    assert.equal(await page.evaluate(() => clicks), 1, "the activity indicator does not intercept or repeat the top-right click");
+    assert.ok(ms >= (status === "unmet" ? expect.timeout - 10 : 340));
+    assert.equal((await engine.read(tab.ref)).lastAction.expectation.status, status);
+    console.log(`PASS: ${expect.kind} expectation ${status} in ${ms} ms with one click.`);
+  }
+  const beforeNavigate = await engine.read(tab.ref);
+  const navigation = engine.act(tab.ref, { snapshot: beforeNavigate.snapshot, observe: "summary",
+    steps: [{ op: "navigate", value: `${fixtureUrl}/activity-next` }], expect: { kind: "visible", selector: "#never", timeout: 8000 } });
+  await page.waitForURL(`${fixtureUrl}/activity-next`);
+  const receiptDeadline = Date.now() + 2000;
+  while (engine.receipts.get(tab.ref)?.snapshot !== beforeNavigate.snapshot && Date.now() < receiptDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(engine.receipts.get(tab.ref)?.snapshot, beforeNavigate.snapshot);
+  assert.equal((await stopCurrent()).stopped, true);
+  const cancelledNavigation = await navigation;
+  assert.equal(cancelledNavigation.completed.length, 1);
+  assert.equal(cancelledNavigation.expectation.status, "cancelled");
+  assert.equal((await engine.read(tab.ref)).lastAction.expectation.status, "cancelled");
+  assert.equal((await stopCurrent()).stopped, false);
+  await stopPopup.close();
+  console.log("PASS: local-path uploads, handle refs, SPA selectors and extension stop during navigation verification.");
+  await page.goto(fixtureUrl);
   const beforeReload = await engine.read(tab.ref);
   await page.reload();
   await assert.rejects(engine.act(tab.ref, { snapshot: beforeReload.snapshot, steps: [{ op: "click", selector: "#save" }] }), /stale/);
@@ -502,15 +562,14 @@ try {
   await engine.read(afterRestart.ref);
   const annotationMessages = [];
   const annotations = new Annotations(bridge, { submit: async request => { annotationMessages.push(request); return { accepted: true }; } });
+  bridge.on("annotation", (ref, reply) => void annotations.start(ref, undefined, true).then(() => reply(), error => reply(error.message)));
   bridge.idleTimeoutMs = 30000;
   bridge.beforeRelease = ref => annotations.detach(ref);
   // CDP can inspect closed roots for tests; ordinary page scripts cannot access them.
   async function annotationControl(selector, evaluate, value) {
     const entry = annotations.pages.get(afterRestart.ref);
     const { root } = await entry.cdp.send("DOM.getDocument", { depth: -1, pierce: true });
-    const findToolbar = node => node.attributes?.includes("data-dsh-annotation") ? node
-      : [...(node.children || []), ...(node.shadowRoots || [])].map(findToolbar).find(Boolean);
-    const host = findToolbar(root); assert.equal(host.shadowRoots[0].shadowRootType, "closed");
+    const host = findAnnotationToolbar(root); assert.equal(host.shadowRoots[0].shadowRootType, "closed");
     const { nodeId } = await entry.cdp.send("DOM.querySelector", { nodeId: host.shadowRoots[0].nodeId, selector });
     assert.ok(nodeId, `annotation control ${selector} exists`);
     const context = [...entry.contexts.values()].find(item => item.name === entry.world && item.auxData?.frameId === entry.frameId);
@@ -529,10 +588,27 @@ try {
   const fillAnnotation = text => annotationControl("textarea", (element, value) => { element.value = value; }, text);
   const waitAnnotation = text => annotationControl("output", (element, value) => {
     if (element.textContent.includes(value)) return;
-    return new Promise(resolve => { const observer = new MutationObserver(() => { if (element.textContent.includes(value)) { observer.disconnect(); resolve(); } }); observer.observe(element, { childList: true, subtree: true, characterData: true }); });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { observer.disconnect(); reject(new Error(`Annotation did not reach ${value}: ${element.textContent}`)); }, 8000);
+      const observer = new MutationObserver(() => { if (element.textContent.includes(value)) { clearTimeout(timer); observer.disconnect(); resolve(); } });
+      observer.observe(element, { childList: true, subtree: true, characterData: true });
+    });
   }, text);
+  let annotatePopup;
+  const openAnnotatePopup = async () => {
+    annotatePopup = await browser.newPage();
+    await annotatePopup.goto(`chrome-extension://${bridge.id}/popup.html`);
+  };
+  await openAnnotatePopup();
+  await reopened.bringToFront();
+  const annotateCurrent = () => annotatePopup.evaluate(() => chrome.runtime.sendMessage({ type: "annotate" }));
+  assert.match((await annotateCurrent()).error, /打开要接收批注的聊天会话/);
   annotations.currentSession({ client: "browser-test", revision: 1, sessionId: "frontend-session", title: "Frontend test", active: true });
-  await annotations.start(afterRestart.ref);
+  if (process.env.DSH_TEST_ARTIFACTS) {
+    await annotatePopup.getByRole("button", { name: "批注当前页面" }).waitFor();
+    await annotatePopup.locator("body").screenshot({ path: path.join(process.env.DSH_TEST_ARTIFACTS, "annotation-entry.png") });
+  }
+  assert.equal((await annotateCurrent()).ok, true);
   const toolbar = reopened.locator('[data-dsh-annotation="toolbar"]');
   await reopened.evaluate(() => {
     window.pointerEffects = 0;
@@ -543,6 +619,27 @@ try {
   assert.equal(await reopened.locator("#out").textContent(), "", "selection must not activate the underlying button");
   assert.equal(await reopened.evaluate(() => document.querySelector('[data-dsh-annotation="toolbar"]').shadowRoot), null, "page scripts cannot rewrite the private annotation controls");
   await fillAnnotation("Make this button green");
+  await annotatePopup.close();
+  await openAnnotatePopup();
+  const anotherTab = await browser.newPage();
+  await anotherTab.goto(`${fixtureUrl}/?other-tab=1`);
+  await anotherTab.bringToFront();
+  assert.equal((await annotateCurrent()).ok, true, "popup immediately opens annotation in a newly loaded tab");
+  const anotherToolbar = anotherTab.locator('[data-dsh-annotation="toolbar"]');
+  await anotherToolbar.waitFor();
+  await anotherTab.locator("h1").click();
+  await anotherTab.keyboard.insertText("A separate draft");
+  await anotherTab.goto(`${fixtureUrl}/?other-tab=2`);
+  assert.equal((await annotateCurrent()).ok, true, "popup reopens annotation after navigation");
+  await anotherTab.locator("#save").click();
+  assert.equal(await anotherTab.locator("#out").textContent(), "", "new document starts with its own element picker");
+  await anotherTab.goto("about:blank");
+  assert.match((await annotateCurrent()).error, /无法批注/);
+  await anotherTab.close();
+  await reopened.bringToFront();
+  assert.equal((await annotateCurrent()).ok, true);
+  assert.equal(await annotationControl("textarea", element => element.value), "Make this button green", "switching back and reopening resumes the original draft");
+  await annotatePopup.close();
   if (process.env.DSH_TEST_ARTIFACTS) {
     await mkdir(process.env.DSH_TEST_ARTIFACTS, { recursive: true });
     await reopened.screenshot({ path: path.join(process.env.DSH_TEST_ARTIFACTS, "annotation-edit.png") });
@@ -596,7 +693,7 @@ try {
     : { applications: { plans: [], connectors: [], connections: [], policy: { askBeforeInstall: true, trustedPublishers: [] } } };
   const manager = await browser.newPage();
   const errors = []; manager.on("pageerror", error => errors.push(error.message));
-  await manager.goto(`http://127.0.0.1:${bridge.port}/manage`);
+  await manager.goto(bridge.approvalUrl("manage"));
   await manager.locator("#status").filter({ hasText: "本机连接已就绪" }).waitFor();
   await manager.getByRole("tab", { name: "应用程序" }).click();
   await manager.getByRole("cell", { name: "Unity", exact: true }).waitFor();
@@ -607,6 +704,7 @@ try {
     if (artifactDir) await manager.screenshot({ path: path.join(artifactDir, `management-${width}.png`), fullPage: true });
   }
   assert.deepEqual(errors, []); await manager.close(); await annotations.detach(afterRestart.ref);
+  console.log("PASS: trusted management link bootstraps the approval session and renders the app inventory.");
   assert.equal(await toolbar.count(), 0, "annotation close must remove the toolbar");
   await annotations.start(afterRestart.ref);
   await reopened.locator("#save").click();
@@ -620,7 +718,11 @@ try {
   assert.equal(await annotationControl(".draft-edit", element => element.textContent), "Unfinished draft", "selecting again stages the recovered note in the original page only");
   await clickAnnotation(".draft-edit");
   assert.equal(await annotationControl("textarea", element => element.value), "Unfinished draft", "the recovered note can be edited without losing its comment");
-  annotations.currentSession({ client: "browser-test", revision: 2, sessionId: "another-session", title: "Another conversation", active: true });
+  // Match the client overlay lifecycle: switching unmounts the old conversation
+  // before publishing the new one. Two active sessions intentionally retain the
+  // tab's existing binding instead of moving annotations across conversations.
+  annotations.currentSession({ client: "browser-test", revision: 2, sessionId: "frontend-session", title: "Frontend test", active: false });
+  annotations.currentSession({ client: "browser-test", revision: 3, sessionId: "another-session", title: "Another conversation", active: true });
   await annotations.start(afterRestart.ref);
   await reopened.locator("#save").click();
   await fillAnnotation("Second annotation");

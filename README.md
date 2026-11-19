@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.2.3` fixes default DOM reads on pages with additional body elements inside shadow roots, while retaining shadow and iframe content. Navigation batches reject missing or unsupported `step.value` URLs before dispatching any action. Installation and connection guidance now explains the browser entry points, unique read roots, snapshot replacement and cursor pagination. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
+Version `0.2.4` adds authenticated approval links for browser pairing and app management. The extension menu can stop actions in the current tab, including verification after navigation. App control uses live checks of the selected window and locks npm connector dependencies before approval. Start or resume page annotations from the extension menu. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,7 +25,7 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.2.3** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.2.4** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
@@ -64,14 +64,14 @@ There is no public hosted demo. After the DSH plugin starts, its default local c
 | Drag and drop | Drag between elements in the same frame, or drop authorized local files and MIME data onto an element. |
 | Network metadata | Explicit start/stop capture, 200-entry capacity, filtered pages of 10 (up to 20). No query strings, credentials, headers or bodies. |
 | Local diagnostics | Bounded in-memory command stages, duration and error codes; disable, clear, export or explicitly add logs to the draft. |
-| Browser stop | Input displays private stop controls and a brief target highlight; cancellation stops later steps and reports uncertain effects. |
+| Browser stop | A page indicator shows active input. Use the DoYourWeb extension menu to stop the current tab’s operation, including verification after navigation. The receipt records completed or uncertain effects. |
 | Screenshots | Saves PNG files locally and returns their paths instead of embedding base64. |
 | Background connection | Saves pairing settings, reconnects automatically, and releases idle debugger connections. |
 | Element annotations | Stage multiple comments with selectors, styles, bounds and optional crops; edit or delete staged notes. The session-bound queue survives collapse, docking and reattachment. Confirm notes into the chat draft, then send from chat. |
 | Running apps | Search visible Windows application windows with `@`, with cached program icons. References include process lifetime and window identity. |
 | MCP / CLI | Known official connectors, MCP Registry and npm CLI discovery, stdio / Streamable HTTP, and reviewed custom configurations. |
-| Installation approval | Native DSH questions or a local `/apps` page; exact package versions and npm lifecycle scripts disabled. Optional repeat-install bypass is restricted to reviewed, trusted sources. |
-| Desktop fallback | Cua Driver MCP, bounded text-only reads by default, on-demand images, cached checks and automatic launch for selected apps and explicit stops for repeated polling. |
+| Installation approval | Native DSH questions or a local `/apps` page; npm dependencies are locked before approval and installed from that lock with lifecycle scripts disabled. Optional repeat-install bypass is restricted to reviewed, trusted sources. |
+| Desktop fallback | Cua Driver MCP, bounded text-only reads by default, on-demand images, and live identity and geometry checks scoped to the selected window. Reads can recover a missing window and stop on repeated polling. |
 | Mouse input | `app_mouse` batches up to 8 clicks, double/right clicks, scrolls and drags from one visual snapshot; separate foreground approval. |
 
 Browser budgets count JavaScript characters, including JSON escaping and metadata. App tool `limit` values bound body text; status, steps and image-path metadata are additional. MCP results omit duplicate JSON, and CLI stdout/stderr share one body budget. Character counts are not model tokens, and output budgets do not limit DOM traversal time.
@@ -142,7 +142,7 @@ This requires a published package. If the registry returns `404`, use the local 
 ### Build and Install Locally
 
 ```sh
-git clone --branch ver0.2.3 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.4 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -164,6 +164,8 @@ If both the navigation entry and `/browser` candidate are missing, check that th
 4. Return to DSH, select a tab with `@`, and send your request.
 
 The extension popup and pairing page do not need to remain open. Installing the DSH plugin does not install the browser extension automatically.
+
+Open approval windows from DSH: `/browser` for browser pairing and `/apps` for application management. A directly opened local URL shows instructions without granting approval access. DSH opens a scoped, single-use link that expires after one minute; the resulting confirmation window lasts 30 minutes. Reopen it from DSH if it expires. An already paired extension continues reconnecting automatically.
 
 After upgrading the DSH plugin, fully quit DSH from its tray/background process and relaunch it so the new host module is loaded.
 
@@ -206,7 +208,7 @@ When multiple tabs are authorized, pass the selected tab's reference as `tab`. D
 
 After installing or upgrading, fully exit DSH from the system tray, restart it, and reload the browser extension. For local development, build this working tree and install its absolute directory path. Do not enable the npm copy and local copy on the same port.
 
-- **Annotations:** choose “批注当前页面” in the extension popup, or ask DSH to enable annotations on a referenced tab. Pick an element, write a comment, then press Enter or click “加入聊天草稿”. It appends to the target chat draft with an optional image attachment. Drag the toolbar as needed, collect multiple annotations, then press Enter in chat to send them together. Shift+Enter inserts a newline. The plugin keeps no annotation files or library. Controlled pages also show a top-right annotation button.
+- **Annotations:** open the destination DSH chat and choose “批注当前页面” in the browser extension popup. Use the same entry after switching tabs to annotate the current page, or when returning to the same loaded page to resume its draft. A reload or full navigation starts a new document. Add an unfinished annotation to the chat draft before leaving if you need to keep it. Pick an element, write a comment, then press Enter or click “加入聊天草稿” to append it with an optional image. Shift+Enter inserts a newline. Press Enter in chat to send.
 - **Apps:** select a running application with `@Unity` or another program name. DSH discovers connectors with `app_discover`, requests connection/installation through `app_connect`, then invokes MCP tools or CLI arguments with `app_call`. A connector found outside discovery can be proposed with its source documentation for human review.
 - **Management:** `/apps` opens the local application, connector and approval manager. It need not remain open. Files, folders and conversations in `@` each show three previews with expand/collapse controls; individual folders retain native navigation.
 - **Fallback:** `app_desktop` uses upstream Cua Driver when structured tools cannot cover the task. Default reads return bounded controls without screenshots. Use `screenshot: true` only for visual grounding; `app_mouse` then supports up to 8 known-target clicks, scrolls or drags without intermediate captures. Missing windows and repeated inspections return `stop: true`. It does not bypass OS permissions.
@@ -276,7 +278,11 @@ lib/                 Generated build output, not tracked in Git
 
 **Connection lifetime.** Idle connections detach the debugger without closing the tab. A later read reconnects. Restarting the browser changes tab-reference sessions, so select the page again with `@`.
 
-**Data handling.** Pairing credentials and authorization records live in the local data directory; screenshots are stored under `captures/`. Referenced page excerpts enter DSH's model context and may be sent to your configured model provider. Keep pairing files and screenshots private. Purchases, destructive actions and sensitive submissions require explicit user authorization; the plugin does not provide a separate transaction-confirmation dialog.
+**Data handling.** Pairing credentials and authorization records live in the local data directory; screenshots are stored under `captures/`. New `browser_capture` files in the default directory are tracked in an ownership index and retained for up to 24 hours or the latest 50 captures; cleanup runs on the next capture. Copy an image elsewhere to keep it. Older unindexed files, unrelated files and files edited since capture are left alone. Annotation images remain ordinary DSH chat attachments. Referenced page excerpts enter DSH's model context and may be sent to your configured model provider. Keep pairing files and screenshots private. Purchases, destructive actions and sensitive submissions require explicit user authorization; the plugin does not provide a separate transaction-confirmation dialog.
+
+**Local trust.** Approval links are issued through DSH's authenticated client connection; the public bridge pages expose no approval credentials. Browser Origin headers alone do not authorize management or pairing. This is not an operating-system isolation boundary against a process with the same user's access to DSH credentials, memory or files.
+
+Existing pairing tokens are preserved on upgrade. The new approval entry point does not revoke a token previously exposed or issued incorrectly. There is currently no host-side per-browser revocation control; the extension's **Unpair** only removes its own saved copy. To revoke all old browser tokens, stop DSH, move or remove `<DSH_HOME>/browser-tabs/pairing.json`, then restart DSH. In each trusted extension, choose **Unpair** and pair again through DSH `/browser`. Other local data, including screenshots, need not be removed.
 
 <details>
 <summary>Development checks</summary>

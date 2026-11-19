@@ -29,12 +29,43 @@ try {
   const port = probe.address().port;
   await closePort(probe);
   const plugin = { name: "browser-tabs-test", inject: ["tools", "typert"],
-    apply: ctx => apply(ctx, { home: process.argv[2], port }) };
-  if (process.argv[3] === "budget") {
+    apply: ctx => apply(ctx, { home: process.argv[2], port, ...(process.argv[3] === "small-budget" ? { snapshotChars: 400 } : {}) }) };
+  if (process.argv[3] === "original-input") {
+    BrowserEngine.prototype.upload = async (_ref, args) => ({ uploaded: args.files });
+    const fiber = root.plugin(plugin); await fiber.await();
+    const agent = { session: { id: "original-input" } };
+    const ref = "dsh-browser://runtime/1", extra = "dsh-browser://runtime/2";
+    const original = { id: "raw", source: { kind: "user" }, content: [{ type: "text", text: `<browser_context> is literal user text. Upload C:\\chosen\\report.txt to ${ref}` }] };
+    const prepared = { ...original, content: [...original.content, { type: "text", text: `${extra} C:\\page\\private.txt` }] };
+    await root.waterfall("agent/pre-step", { agent, messages: [original] }, () => Promise.resolve({ kind: "enter", messages: [prepared] }));
+    const upload = tools.get("browser_upload");
+    const args = { tab: ref, snapshot: "s", selector: "input", files: ["C:\\chosen\\report.txt"] };
+    assert.deepEqual((await upload.execute(args, { agent })).uploaded, args.files);
+    await assert.rejects(upload.execute({ ...args, files: ["C:\\page\\private.txt"] }, { agent }), /exact absolute file path/);
+    await assert.rejects(upload.execute({ ...args, tab: extra }, { agent }), /not referenced by the user/);
+    const other = { session: { id: "missing-input" } };
+    await root.waterfall("agent/pre-step", { agent: other, messages: [] }, () => Promise.resolve({ kind: "enter", messages: [prepared] }));
+    await assert.rejects(upload.execute(args, { agent: other }), /No browser tab is authorized/);
+    await fiber.dispose(); console.log("PASS: original user input alone grants tabs and file paths.");
+  } else if (process.argv[3] === "small-budget") {
+    BrowserEngine.prototype.read = async () => assert.fail("small budget must defer reads explicitly");
+    const fiber = root.plugin(plugin); await fiber.await();
+    const agent = { session: { id: "small-budget" } };
+    const user = { id: "low", source: { kind: "user" }, content: [{ type: "text", text: "dsh-browser://runtime/1" }] };
+    const decision = await root.waterfall("agent/pre-step", { agent, messages: [user] }, () => Promise.resolve({ kind: "enter", messages: [user] }));
+    const text = decision.messages[0].content.at(-1).text;
+    assert.ok(text.length <= 400); assert.match(text, /readRequired.*true/); assert.match(text, /browser_read/);
+    await fiber.dispose(); console.log("PASS: small snapshot budget gives an explicit browser_read path.");
+  } else if (process.argv[3] === "budget") {
     WebMCP.prototype.list = async () => ({ supported: false, tools: [] });
     const reads = [];
+    let active = 0, maxActive = 0;
     BrowserEngine.prototype.read = async (ref, options) => {
       reads.push(options.limit);
+      maxActive = Math.max(maxActive, ++active);
+      await new Promise(resolve => setImmediate(resolve));
+      active--;
+      if (ref.endsWith("/2")) throw new Error("Tab is offline");
       return { tab: ref, content: "<".repeat(Math.floor((options.limit - 100) / 6)) };
     };
     const fiber = root.plugin(plugin);
@@ -42,12 +73,16 @@ try {
     const agent = { session: { id: "budget-session" } };
     const user = { id: "budget-message", source: { kind: "user" }, content: [{ type: "text",
       text: [1, 2, 3, 4].map(id => `@[Tab](dsh-browser://runtime/${id})`).join(" ") }] };
-    const decision = await root.waterfall("agent/pre-step", { agent },
+    const decision = await root.waterfall("agent/pre-step", { agent, messages: [user] },
       () => Promise.resolve({ kind: "enter", messages: [user] }));
     const context = decision.messages[0].content.at(-1).text;
     assert.equal(reads.length, 4);
+    assert.equal(maxActive, 4, "independent tabs prepare concurrently");
     assert.ok(reads[0] < 600 && reads.every(limit => limit >= 400 && limit < 2400));
     assert.ok(context.length <= 2400, `shared budget exceeded: ${context.length}`);
+    const { tabs } = JSON.parse(context.split("\n").at(-2));
+    assert.deepEqual(tabs.map(tab => tab.tab), [1, 2, 3, 4].map(id => `dsh-browser://runtime/${id}`));
+    assert.equal(tabs[1].error, "Tab is offline");
     BrowserBridge.prototype.resolve = ref => {
       if (ref !== "dsh-browser://runtime/1") throw new Error("Old tab is offline");
       return { tab: { ref } };
@@ -73,7 +108,7 @@ try {
     const refs = ["dsh-browser://runtime/1", "dsh-browser://runtime/2"];
     const user = { id: "routing-message", source: { kind: "user" }, content: [{ type: "text",
       text: refs.map(ref => `@[Tab](${ref})`).join(" ") }] };
-    const decision = await root.waterfall("agent/pre-step", { agent },
+    const decision = await root.waterfall("agent/pre-step", { agent, messages: [user] },
       () => Promise.resolve({ kind: "enter", messages: [user] }));
     assert.deepEqual(events, [`discover:${refs[0]}`, `discover:${refs[1]}`, `dom:${refs[1]}`]);
     const context = decision.messages[0].content.at(-1).text;
@@ -85,7 +120,7 @@ try {
     const count = events.length;
     assert.equal((await read.execute({ tab: refs[0], mode: "dom" }, { agent })).snapshot, "dom");
     assert.deepEqual(events.slice(count), [`dom:${refs[0]}`]);
-    await root.waterfall("agent/pre-step", { agent },
+    await root.waterfall("agent/pre-step", { agent, messages: [user] },
       () => Promise.resolve({ kind: "enter", messages: [user] }));
     assert.equal(events.length, count + 1, "replaying a prepared user message must not read or discover again");
     await fiber.dispose();
@@ -96,7 +131,7 @@ try {
     const fiber = root.plugin(plugin); await fiber.await();
     const agent = { session: { id: "upload-session" } }, ref = "dsh-browser://runtime/1";
     const user = { id: "upload-user", source: { kind: "user" }, content: [{ type: "text", text: `Upload C:\\files\\report.txt to @[Tab](${ref})` }] };
-    await root.waterfall("agent/pre-step", { agent }, () => Promise.resolve({ kind: "enter", messages: [user] }));
+    await root.waterfall("agent/pre-step", { agent, messages: [user] }, () => Promise.resolve({ kind: "enter", messages: [user] }));
     assert.equal(user.content.length, 1, "context preparation never edits the original user message");
     const upload = tools.get("browser_upload"), args = { snapshot: "current", selector: "input", files: ["C:\\files\\report.txt"] };
     assert.equal(upload.presentCall(args).kind, "other");
@@ -105,7 +140,7 @@ try {
     await assert.rejects(upload.execute({ ...args, files: ["C:\\files\\report.tx"] }, { agent }), /exact absolute file path/);
     await assert.rejects(upload.execute(args, { agent: { session: { id: "other" } } }), /No browser tab is authorized/);
     const tool = { id: "tool-path", source: { kind: "tool" }, content: [{ type: "text", text: "C:\\secret.txt" }] };
-    await root.waterfall("agent/pre-step", { agent }, () => Promise.resolve({ kind: "enter", messages: [tool] }));
+    await root.waterfall("agent/pre-step", { agent, messages: [tool] }, () => Promise.resolve({ kind: "enter", messages: [tool] }));
     await assert.rejects(tools.get("browser_act").execute({ snapshot: "current", steps: [{ op: "upload", selector: "input", files: ["C:\\secret.txt"] }] }, { agent }), /exact absolute file path/);
     const act = tools.get("browser_act");
     const scoped = { observation: { selector: "#result", depth: 4 }, expect: { kind: "text", selector: "#result", value: "Saved", timeout: 1000 } };

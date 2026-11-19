@@ -33,7 +33,7 @@ let uuidSequence = 0;
 
 function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, session = {}) {
   let load;
-  const sockets = [], timers = new Map(), detached = [], fetched = [], badges = [];
+  const sockets = [], timers = new Map(), detached = [], fetched = [], badges = [], alarms = new Map();
   let sequence = 0;
   class Socket {
     static OPEN = 1;
@@ -48,10 +48,10 @@ function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, sessi
     extension: { isAllowedFileSchemeAccess: async () => stored.fileAccess === true },
     tabs: { query: async () => tabs, get: async id => tabs.find(tab => tab.id === id),
       onUpdated: event(), onCreated: event(), onRemoved: event(), onActivated: event() },
-    debugger: { onEvent: event(), onDetach: event(), attach: noop, detach: async target => detached.push(target.tabId) },
+    debugger: { onEvent: event(), onDetach: event(), attach: noop, getTargets: async () => [], sendCommand: async () => ({}), detach: async target => detached.push(target.tabId) },
     action: { setBadgeText: async options => badges.push(options.text), setBadgeBackgroundColor: noop, setTitle: noop },
-    runtime: { onStartup: event(), onInstalled: event(), onMessage: event(), getURL: path => `chrome-extension://test/${path}` },
-    alarms: { onAlarm: event(), create: noop },
+    runtime: { onStartup: event(), onInstalled: event(), onMessage: event(), getManifest: () => ({ version: "0.2.3" }), getURL: path => `chrome-extension://test/${path}` },
+    alarms: { onAlarm: event(), get: async name => alarms.get(name), create: async (name, value) => alarms.set(name, value) },
     storage: { local: { get: () => new Promise(resolve => { load = resolve; }),
       set: async values => Object.assign(stored, values),
       remove: async keys => { for (const key of [].concat(keys)) delete stored[key]; } },
@@ -67,8 +67,66 @@ function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, sessi
       return new Response(Buffer.from("89504e470d0a1a0a", "hex"));
     },
   });
-  return { chrome, sockets, timers, detached, fetched, badges, stored, initialize: () => load(stored) };
+  return { chrome, sockets, timers, detached, fetched, badges, alarms, stored, initialize: () => load(stored) };
 }
+
+test("worker restart reconciles only recorded debugger sessions owned by this extension", async () => {
+  const session = { browserSession: "browser-lifetime", ownedTabs: [7, 8, 9] };
+  const running = worker({}, [], bundle.outputFiles[0].text, session);
+  const probed = [];
+  running.chrome.debugger.getTargets = async () => [
+    { tabId: 7, attached: true }, { tabId: 8, attached: true }, { tabId: 9, attached: false }, { tabId: 10, attached: true },
+  ];
+  running.chrome.debugger.sendCommand = async target => {
+    probed.push(target.tabId);
+    if (target.tabId === 8) throw new Error("Debugger is not attached to this extension");
+    return {};
+  };
+  running.initialize(); await flush();
+  assert.deepEqual(probed, [7, 8]);
+  assert.deepEqual(running.detached, [7], "an attached flag must never authorize detaching another debugger");
+  assert.deepEqual(Array.from(session.ownedTabs), []);
+  assert.equal(running.sockets.length, 1, "connect only after old consumers have been released");
+});
+
+test("existing reconnect alarm keeps its scheduled deadline on worker wake", async () => {
+  const running = worker();
+  const existing = { scheduledTime: 1234, periodInMinutes: 0.5 };
+  running.alarms.set("reconnect", existing);
+  running.initialize(); await flush();
+  assert.equal(running.alarms.get("reconnect"), existing);
+});
+
+test("existing pong reports version and protocol drift without rejecting the connection", async () => {
+  const running = worker();
+  running.initialize(); await flush();
+  const connection = running.sockets[0]; connection.open(); await flush();
+  assert.equal(connection.messages.filter(message => message.method === "dsh.ping").length, 1);
+  const listener = running.chrome.runtime.onMessage.listeners[0];
+  for (const [params, expected] of [
+    [undefined, /协议修订不同或主机较旧/],
+    [{ version: "0.2.3", protocolRevision: 0 }, /协议修订不同或主机较旧/],
+    [{ version: "0.2.2", protocolRevision: 1 }, /版本不同/],
+    [{ version: "0.2.3", protocolRevision: 1 }, /^$/],
+  ]) {
+    await connection.onmessage({ data: JSON.stringify({ method: "dsh.pong", params }) });
+    const state = await new Promise(resolve => listener({ type: "status" }, {}, resolve));
+    assert.match(state.compatibilityWarning, expected);
+    assert.equal(state.connected, true, "compatibility hints must not block a paired bridge");
+  }
+});
+
+test("sleeping tabs are visible but fail attachment before renderer commands", async () => {
+  const running = worker({}, [{ id: 7, url: "https://example.com/", frozen: true }]);
+  let attaches = 0;
+  running.chrome.debugger.attach = async () => { attaches++; };
+  running.initialize(); await flush(); running.sockets[0].open(); await flush();
+  const connection = running.sockets[0];
+  assert.equal(connection.messages.find(message => message.method === "dsh.inventory").params.tabs[0].frozen, true);
+  await connection.onmessage({ data: JSON.stringify({ id: 1, method: "chrome.debugger.attach", params: [{ tabId: 7 }] }) });
+  assert.match(connection.messages.at(-1).error, /asleep/);
+  assert.equal(attaches, 0);
+});
 
 test("browser startup and alarms wait for saved settings without opening the popup", async () => {
   const running = worker({ profile: "saved-profile" });

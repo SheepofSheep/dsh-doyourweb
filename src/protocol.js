@@ -83,7 +83,7 @@ function result(name, fields) {
 }
 
 const invocations = [
-  { method: "list", parameters: request("browserTabs/list", { query: "string" }),
+  { method: "list", parameters: request("browserTabs/list", { query: "string", sessionId: "string" }),
     result: result("browserTabs/list", { tabs: "array", connected: "boolean" }) },
   { method: "setup", parameters: request("browserTabs/setup", {}),
     result: result("browserTabs/setup", { url: "string", extensionPath: "string" }) },
@@ -96,7 +96,7 @@ const invocations = [
   { method: "manage", parameters: request("browserTabs/manage", {}),
     result: result("browserTabs/manage", { url: "string" }) },
   { method: "diagnostics", parameters: request("browserTabs/diagnostics", { clear: "boolean", enabled: "boolean" }),
-    result: result("browserTabs/diagnostics", { enabled: "boolean", capacity: "number", events: "array", version: "string" }) },
+    result: result("browserTabs/diagnostics", { enabled: "boolean", capacity: "number", events: "array", version: "string", extensions: "array" }) },
 ];
 
 export const descriptors = invocations.map(({ method, parameters, result: codec }) => ({

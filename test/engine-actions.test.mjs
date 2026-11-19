@@ -117,13 +117,19 @@ test("post-action scope stays explicit, and missing scope cannot fall back to bo
 
 test("one final expectation preserves actions across matched, unmet and error outcomes", async () => {
   let evaluations = 0, clicks = 0;
+  const timeout = () => Object.assign(new Error("condition timed out"), { name: "TimeoutError" });
   const page = { evaluate: async () => ({ url: "https://example.com", epoch: 1 }), title: async () => "Expect",
+    waitForURL: async (match, options) => { assert.equal(options.waitUntil, "commit"); assert.ok(match(new URL("https://example.com/"))); },
     locator: selector => ({ ariaSnapshot: async () => "- button [ref=e1]", click: async () => { clicks++; },
-      evaluate: async (fn, args) => { evaluations++; return fn({ innerText: "Saved successfully", value: "done" }, args); },
-      waitFor: async () => { const error = new Error("visibility timed out"); error.name = "TimeoutError"; throw error; } }) };
+      waitForFunction: async (fn, args, options) => {
+        evaluations++;
+        assert.ok(options.timeout > 0);
+        if (!fn({ innerText: "Saved successfully", value: "done" }, args)) throw timeout();
+      },
+      waitFor: async () => { throw timeout(); } }) };
   const engine = new BrowserEngine({ page: async () => page });
   for (const [expect, status] of [[{ kind: "text", selector: "#result", value: "Saved" }, "matched"],
-    [{ kind: "value", selector: "input", value: "wrong" }, "unmet"], [{ kind: "url", value: "https://example.com" }, "matched"],
+    [{ kind: "value", selector: "input", value: "wrong" }, "unmet"], [{ kind: "url", value: "https://example.com/" }, "matched"],
     [{ kind: "visible", selector: "#result", timeout: 1 }, "unmet"]]) {
     const read = await engine.read("tab");
     const result = await engine.act("tab", { snapshot: read.snapshot, observe: "summary", expect, steps: [{ op: "click", ref: "e1" }] });
@@ -169,7 +175,7 @@ test("a minimum-budget recovery keeps twelve completed steps and both post-actio
   let snapshots = 0;
   const page = { evaluate: async () => ({ url: "https://example.com", epoch: 1 }), title: async () => "Receipt", url: () => "https://example.com",
     locator: () => ({ ariaSnapshot: async () => { snapshots++; if (snapshots === 2) throw new Error("missing scope ".repeat(100)); return "- button [ref=e1]"; },
-      click: async () => {}, evaluate: async () => { throw new Error("expectation failed ".repeat(100)); } }) };
+      click: async () => {}, waitForFunction: async () => { throw new Error("expectation failed ".repeat(100)); } }) };
   const engine = new BrowserEngine({ page: async () => page });
   const read = await engine.read("tab");
   const result = await engine.act("tab", { snapshot: read.snapshot, observation: { selector: "#gone" },
@@ -190,7 +196,7 @@ test("scope and final expectation expose reproducible calls and serialized sizes
     let snapshots = 0, checks = 0;
     const page = { evaluate: async () => ({ url: "https://example.com", epoch: 1 }), title: async () => "Search",
       locator: selector => ({ ariaSnapshot: async () => { snapshots++; return selector === "#results" ? "- status: Found" : "- navigation: large unrelated menu\n".repeat(200); },
-        click: async () => {}, evaluate: async () => { checks++; return true; } }) };
+        click: async () => {}, waitForFunction: async () => { checks++; } }) };
     const engine = new BrowserEngine({ page: async () => page });
     const read = await engine.read("tab", { selector: "#results" });
     const result = await engine.act("tab", { snapshot: read.snapshot, ...(scoped ? { observation: { selector: "#results" }, expect: { kind: "text", selector: "#results", value: "Found" } } : {}), steps: [{ op: "click", ref: "e1" }] });

@@ -49,8 +49,8 @@ export function apply(ctx, { browserIcon, tabIcon, appIcon = browserIcon, applic
     if (result.value.connected === false) return [setupCandidate("\u672a\u8fde\u63a5")];
     const tabs = result.value.tabs.map(tab => ({
       name: tab.title || tab.url,
-      description: `${new URL(tab.url).protocol === "file:" ? "本地 HTML" : new URL(tab.url).hostname} - ${tab.browser}`,
-      icon: tabIcon(tab), section: "\u6807\u7b7e\u9875",
+      description: `${new URL(tab.url).protocol === "file:" ? "本地 HTML" : new URL(tab.url).hostname} · ${tab.browser}${tab.discarded || tab.frozen || tab.status === "unloaded" ? " · 休眠，打开后可用" : ""}`,
+      icon: tabIcon(tab), section: "网页",
       value: JSON.stringify({ ref: formatMention(tab), label: tab.title || tab.url }),
     }));
     if (slash && matchesSetup) tabs.unshift(setupCandidate("\u8fde\u63a5\u8bbe\u7f6e"));
@@ -101,7 +101,7 @@ export function apply(ctx, { browserIcon, tabIcon, appIcon = browserIcon, applic
     candidates: (_session, request) => candidates(request, true),
     onPick,
   }));
-  for (const [method, source, section] of [["apps", "desktop-apps", "应用程序"]]) {
+  for (const [method, source, section] of [["apps", "desktop-apps", "应用"]]) {
     ctx.effect(() => ctx.inputTriggers.registerSource({
       trigger: "@", name: source, showGroupTitle: false,
       async candidates(_session, request) {

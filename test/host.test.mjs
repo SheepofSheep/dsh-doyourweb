@@ -32,3 +32,7 @@ test("host references and read tools prefer WebMCP and retain explicit DOM fallb
   () => lifecycle("routing", /PASS: host context and browser_read discover/));
 test("upload tool and batches only disclose exact user-supplied paths to selected tabs",
   () => lifecycle("upload-policy", /PASS: uploads require/));
+test("only original claimed user input grants access after context preparation",
+  () => lifecycle("original-input", /PASS: original user input/));
+test("a small initial snapshot budget explicitly requests a read",
+  () => lifecycle("small-budget", /PASS: small snapshot budget/));

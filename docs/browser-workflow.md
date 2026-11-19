@@ -28,6 +28,8 @@ README 的浏览器面板图由当前组件使用已安装 DSH 的 React/UI 图�
 
 `url` 和 `target` 不是目标 URL 的参数别名。缺少 value 或 URL 协议不受支持时，整个动作批次会在派发前拒绝，不执行前序动作。合法的 HTTP/HTTPS 或本地 file URL 可用于导航；导航后先重新读取再执行其他动作。
 
+在浏览器工具栏打开 DoYourWeb 扩展，点“停止当前页操作”。导航后等待验证时也可以停止。`expect` 在 `timeout` 毫秒内等待可见性、指定文本、输入值或完整 URL，默认 8000 ms。停止或超时后，下一次读取的 `lastAction` 仍保留已完成步骤及可能不确定的效果。
+
 ## 本地诊断
 
 “打开日志”记录 `host_send → extension_receive → api_settle → extension_response → host_response` 阶段，包含关联编号、方法、时间、耗时、版本和归类错误码。最多保存 600 条，仅在本机内存保留；可停用、清空或导出。不记录命令参数、页面正文、URL、token、Cookie 或原始错误信息。重启插件后清空。
@@ -50,6 +52,10 @@ README 的浏览器面板图由当前组件使用已安装 DSH 的 React/UI 图�
 
 最多保留 200 条，超过后淘汰旧记录；空闲释放调试连接时清空。返回 `capturingSince`，明确起始时间。仅记录 HTTP(S) 请求方法、去掉查询/片段/凭据的 URL、资源类型、状态码和时序，不记录请求头、响应头或正文。URL 路径本身仍可能包含站点业务标识。
 
+扩展断开、调试器脱离或空闲释放都会停止并丢弃本次采集。断线期间查询会报告页面不可用；恢复连接后查询返回未采集，不会恢复历史或自动继续，需要再次 `action: "start"`。当前侧栏没有网络采集面板，状态与记录通过 `browser_network_requests` 查询。
+
+`browser_capture` 的默认本地 PNG 通过归属索引保留 24 小时或最近 50 份，只在下次截图时清理。未被索引的旧截图、无关文件与编辑过的文件保留；长期使用的图片请复制保存。较小的 `snapshotChars` 若放不下初始快照，会明确返回 `readRequired`，按提示调用 `browser_read`。
+
 <a id="english"></a>
 
 ## English
@@ -59,6 +65,8 @@ DOM reads use the actual document body, preserving its normal shadow content and
 Each new DOM read without `cursor` replaces that tab's snapshot ID. Actions and navigation also invalidate old snapshots. Cursor pagination keeps the same ID, and reading another tab does not replace this tab's snapshot. Always act with the latest ID for that tab. `omittedChars` counts remaining characters in the already-generated snapshot text, not all unread page characters or tokens. For example, `cursor: "abcd1234:200"` and `omittedChars: 600` mean that cursor continues the remaining snapshot text.
 
 For navigation, first read the current page, then use the JSON example above: the destination belongs in `step.value`. `url` and `target` are not aliases. A missing value or unsupported URL scheme rejects the entire batch before any preceding action is dispatched. HTTP/HTTPS and local file URLs are supported. Read the new page before further actions.
+
+Open DoYourWeb in the browser toolbar and select **Stop current page operation** to cancel the active tab's operation, including verification after navigation. `expect` waits up to `timeout` milliseconds for visibility, text, an input value or the exact full URL. The default is 8000 ms. A later read's `lastAction` retains completed steps and any uncertain effects after a stop or timeout.
 
 Open **Browser** in DSH's left navigation to show the current session's right panel. **Pages**, **Apps** and **Open logs** share the panel. Selecting a page or app appends a reference to the current draft, preserving text, references and attachments. The `@` menu remains available; the human sends the draft. Without an open conversation, the panel can still list objects and open setup.
 
@@ -79,3 +87,7 @@ Diagnostics keep up to 600 in-memory metadata events: correlated command stages,
 Use `browser_network_requests` with `action: "start"` before the activity. Capture cannot recover past traffic and never reloads/replays requests. `list` (the default) returns 10 entries, up to 20, with `query`, `errorsOnly`, `includeStatic` and `afterId` filters. Use the returned `nextAfterId` for pagination. Successful static resources are hidden by default. `details` plus `requestId` returns timing/MIME metadata; `clear` removes entries and `stop` removes listeners.
 
 Capture retains up to 200 entries, evicts older entries and clears on idle debugger detach. `capturingSince` states the start time. Only HTTP(S) methods, redacted URLs, resource types, statuses and timing are recorded. URL queries, fragments, credentials, headers and bodies are excluded; URL paths may still contain site-specific identifiers.
+
+An extension disconnect, debugger detach or idle release stops and discards the capture. Queries while disconnected report that the page is unavailable. After reconnection, queries report that capture is stopped; reconnecting neither recovers traffic nor restarts recording. Send `action: "start"` again. There is currently no network panel in the sidebar; use `browser_network_requests` for status and records.
+
+Default local `browser_capture` PNGs have an ownership index and retain up to 24 hours or the latest 50 captures, cleaned only when the next screenshot is taken. Older unindexed, unrelated and edited files remain untouched; copy images elsewhere for long-term use. If `snapshotChars` cannot fit initial context, an explicit `readRequired` result directs the model to `browser_read`.

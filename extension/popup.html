@@ -1,17 +1,40 @@
 <!doctype html>
-<html lang="zh-CN"><meta charset="utf-8"><title>DSH DoYourWeb</title>
-
-<h1>DSH DoYourWeb</h1>
-<label>&#36830;&#25509; DSH <input id="enabled" type="checkbox"></label>
-<output id="status" aria-live="polite">正在检查连接…</output>
-<div class="row"><button id="annotate"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 16-1 5 5-1L20 8l-4-4zM13 7l4 4"/></svg>批注当前页面</button><button id="manage">应用管理</button></div>
-<div id="pairing" hidden>
-  <div class="hint">&#22312; DSH &#30340; /browser &#39029;&#38754;&#28857;&#20987;&#39564;&#35777;&#30721;&#30456;&#21516;&#30340;&#8220;&#20801;&#35768;&#8221;&#21363;&#21487;&#23436;&#25104;&#37197;&#23545;&#12290;</div>
-  <code id="code"></code>
-</div>
-<button id="setup">打开连接页面</button>
-<details><summary>连接设置</summary><div class="row"><label for="port" class="hint">DSH 端口</label><input id="port" type="number" min="1" max="65535"><button id="save-port">保存</button></div>
-<div class="row"><button id="unpair" hidden>解除配对</button></div></details>
-<p class="hint" id="file-access"></p>
-<style>:root{color-scheme:light dark;--ink:#242424;--muted:#666;--ground:#fff;--soft:#f3f3f3;--line:#dfdfdf;--control:#ccc;--focus:#0066cc}*{box-sizing:border-box}body{width:336px;margin:0;padding:20px;font:13px/1.6 "Segoe UI","Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC",sans-serif;color:var(--ink);background:var(--ground)}h1{font-size:17px;letter-spacing:-.3px;margin:0 0 18px;font-weight:600}label{display:flex;align-items:center;justify-content:space-between;gap:8px}output{display:block;font-size:12px;min-height:44px;background:var(--soft);border-radius:6px;padding:12px;margin:16px 0;color:var(--muted);overflow-wrap:anywhere}output[data-state=connected]{color:var(--ink)}input{accent-color:var(--ink);color:var(--ink);background:var(--ground);caret-color:var(--ink)}button{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;border:1px solid var(--control);border-radius:6px;background:var(--ground);padding:8px 10px;min-height:36px;color:var(--ink);font:inherit;font-size:12px}button:hover{background:var(--soft)}button:disabled{opacity:.5;cursor:default}button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}#annotate{background:var(--ink);color:var(--ground);border-color:var(--ink);flex:1}#setup{width:100%;margin-top:12px}#pairing{margin:16px 0;padding:16px;background:var(--soft);border-radius:6px;text-align:center}#code{display:block;font:500 28px/1.4 ui-monospace,monospace;letter-spacing:4px;margin-top:12px}.row{display:flex;gap:8px;align-items:center;margin-top:12px}.row input[type=number]{width:82px;border:1px solid var(--control);border-radius:6px;padding:7px}details{border-top:1px solid var(--line);margin-top:20px;padding-top:14px}summary{font-size:12px;color:var(--muted);cursor:pointer}.hint{color:var(--muted);font-size:12px}#file-access{margin:16px 0 0}::selection{background:var(--line);color:var(--ink)}[hidden]{display:none!important}@media(prefers-color-scheme:dark){:root{--ink:#eee;--muted:#aaa;--ground:#202020;--soft:#2b2b2b;--line:#383838;--control:#505050;--focus:#82b5ff}}</style>
-<script type="module" src="popup.js"></script></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSH DoYourWeb</title>
+  <link rel="stylesheet" href="popup.css">
+  <script type="module" src="popup.js"></script>
+</head>
+<body>
+  <header>
+    <h1>DSH DoYourWeb</h1>
+    <label class="connection-toggle"><input id="enabled" type="checkbox">连接 DSH</label>
+    <output id="status" aria-live="polite">正在检查连接…</output>
+    <p id="compatibility" class="hint" role="status" hidden></p>
+  </header>
+  <div class="row utility-actions">
+    <button id="annotate" class="primary" disabled>批注当前页面</button>
+    <button id="manage">应用管理</button>
+  </div>
+  <button id="stop-operation" class="quiet" disabled>停止当前页操作</button>
+  <p id="page-feedback" class="hint" role="status" hidden></p>
+  <div id="pairing" hidden>
+    <p class="hint">在 DSH 输入 /browser 打开连接设置，核对验证码后点击“允许”完成配对。</p>
+    <code id="code"></code>
+  </div>
+  <button id="setup">查看连接状态</button>
+  <details class="connection-settings">
+    <summary>连接设置</summary>
+    <div class="row">
+      <label for="port">DSH 端口</label>
+      <input id="port" type="number" min="1" max="65535">
+      <button id="save-port">保存</button>
+    </div>
+    <div class="row"><button id="unpair" hidden>解除配对</button></div>
+    <p class="hint" id="file-access"></p>
+    <p class="hint" id="version"></p>
+  </details>
+</body>
+</html>

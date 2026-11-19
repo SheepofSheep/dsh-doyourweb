@@ -15,7 +15,7 @@ export const CATALOG = [
 export function fingerprint(candidate) {
   return createHash("sha256").update(JSON.stringify({ id: candidate.id, kind: candidate.kind, command: candidate.command,
     args: candidate.args, url: candidate.url, headers: candidate.headers, env: candidate.env, cwd: candidate.cwd, install: candidate.install, package: candidate.package, publisher: candidate.publisher,
-    version: candidate.version, integrity: candidate.integrity, provenance: candidate.provenance })).digest("hex");
+    version: candidate.version, integrity: candidate.integrity, dependencyLock: candidate.dependencyLock?.sha256, provenance: candidate.provenance })).digest("hex");
 }
 
 export function validateConnector(value) {
@@ -67,7 +67,7 @@ export class ConnectorCatalog {
     this.fetcher = fetcher; this.custom = custom; this.home = home; this.find = find; this.cache = new Map();
   }
   async discover(app, { refresh = false, signal, mcpOnly = false } = {}) {
-    const term = app.name.replace(/\.exe$/i, "").replace(/[-_]?\d+(?:\.\d+)*/g, "").trim();
+    const term = app.name.replace(/\.exe$/i, "").trim();
     const candidates = [];
     for (const item of CATALOG.filter(item => item.match.test(term) || item.match.test(app.product || ""))) {
       const command = item.executable ? app.path : await this.find(item.command, item.id === "unity-cli" ? [path.join(os.homedir(), ".unity", "bin"), path.join(os.homedir(), ".local", "bin")] : []);

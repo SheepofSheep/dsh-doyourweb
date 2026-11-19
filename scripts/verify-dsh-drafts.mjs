@@ -8,7 +8,12 @@ import { chromium } from "playwright-core";
 export async function verifyDraftInput(bundle, root) {
   const dependencies = await build({ stdin: { contents: `import * as zod from 'zod'; import * as cordis from '@deepseek-ai/cordis'; window.testDeps={zod,cordis};`, resolveDir: root }, bundle: true, platform: "browser", write: false });
   const helper = await build({ entryPoints: [path.join(root, "src/annotation-drafts.js")], bundle: true, format: "iife", globalName: "draftHelper", write: false });
-  const source = (await readFile(bundle, "utf8")).replace("exports.Config = Config;", "exports.TestShell = SessionInputShell; exports.Config = Config;");
+  const source = await readFile(bundle, "utf8");
+  // The installed shell is private to the DSH loader factory. Expose it at
+  // the CommonJS return in this test copy, regardless of export formatting.
+  const factoryReturn = /\breturn\s+module\s*\.\s*exports(?=\s*;?\s*}\s*}\s*\))/g;
+  assert.equal([...source.matchAll(factoryReturn)].length, 1, "expected one CommonJS factory return in the DSH conversation bundle");
+  const testSource = source.replace(factoryReturn, 'if (typeof SessionInputShell === "function") module.exports.SessionInputShell ??= SessionInputShell; $&');
   const browser = await chromium.launch({ headless: true, channel: "chromium" });
   try {
     const page = await browser.newPage();
@@ -24,12 +29,13 @@ export async function verifyDraftInput(bundle, root) {
         "@deepseek-ai/cordis": window.testDeps.cordis, "@deepseek-ai/dsh-client-store": store,
         "@deepseek-ai/dsh-client-ui-primitives": {}, "@deepseek-ai/dsh-client-ui-slots": {} };
     });
-    await page.addScriptTag({ content: source });
+    await page.addScriptTag({ content: testSource });
     await page.addScriptTag({ content: helper.outputFiles[0].text });
     const result = await page.evaluate(() => {
       const module = window.factory(id => { if (!(id in window.deps)) throw new Error(id); return window.deps[id]; });
       let submissions = 0;
-      const shell = new module.TestShell({ inputTriggers: () => undefined, defaultSink: () => { submissions++; } });
+      if (typeof module.SessionInputShell !== "function") throw new Error("DSH conversation factory did not expose a SessionInputShell constructor");
+      const shell = new module.SessionInputShell({ inputTriggers: () => undefined, defaultSink: () => { submissions++; } });
       const reference = { source: "browser-tabs", ref: "dsh-browser://test/1", label: "Test page", clipboardText: "@[Test page](dsh-browser://test/1)", offset: 4, length: 1 };
       shell.setDraft({ text: `Use ${reference.clipboardText}`, references: [reference] });
       shell.actions.addAttachments(["existing-image"]);

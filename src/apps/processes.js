@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
-import { windowsInventory, usefulWindows } from "./windows.js";
+import { windowsInventory, windowInspection, usefulWindows } from "./windows.js";
 import { windowsWorker } from "./powershell.js";
 
 export const runFile = promisify(execFile);
@@ -51,10 +51,19 @@ export async function processWindows({ signal } = {}) {
   throw new Error("Running-app inventory currently requires Windows; configure a desktop connector for this platform");
 }
 
+async function inspectWindow(app, { signal, present = false } = {}) {
+  const script = app.windowId && process.platform === "win32" && windowInspection(app, present);
+  if (!script) return;
+  const { stdout } = await windowsWorker.run(script, { signal, timeout: 5000 });
+  const row = stdout ? JSON.parse(stdout) : null;
+  if (row) return { ...app, ...row, zOrder: app.zOrder };
+}
+
 export async function findExecutable(command, extra = []) {
   if (!command || typeof command !== "string") return;
+  if (!path.isAbsolute(command) && /[\\/]/.test(command)) return;
   const extensions = process.platform === "win32" && !path.extname(command) ? [".exe", ".cmd", ".bat", ""] : [""];
-  const directories = path.isAbsolute(command) ? [""] : [...extra, ...(process.env.PATH || "").split(path.delimiter)];
+  const directories = path.isAbsolute(command) ? [""] : [...extra, ...(process.env.PATH || "").split(path.delimiter)].filter(directory => directory && path.isAbsolute(directory));
   for (const directory of directories) for (const extension of extensions) {
     const file = path.resolve(directory, command + extension);
     try { if ((await stat(file)).isFile()) return file; } catch { /* Continue PATH search. */ }
@@ -62,7 +71,7 @@ export async function findExecutable(command, extra = []) {
 }
 
 export class AppInventory {
-  constructor({ inventory = processWindows, launch = launchApplication, wait = delay } = {}) { this.inventory = inventory; this.launch = launch; this.wait = wait; this.runtime = randomUUID(); this.apps = new Map(); this.known = new Map(); this.launching = new Map(); this.attempted = new Set(); this.updated = 0; this.pending = undefined; }
+  constructor({ inventory = processWindows, inspect = inventory === processWindows ? inspectWindow : undefined, launch = launchApplication, wait = delay } = {}) { this.inventory = inventory; this.inspect = inspect; this.launch = launch; this.wait = wait; this.runtime = randomUUID(); this.apps = new Map(); this.known = new Map(); this.launching = new Map(); this.attempted = new Set(); this.updated = 0; this.pending = undefined; }
   async list(query = "", signal, refresh = false) {
     signal?.throwIfAborted();
     if (refresh || Date.now() - this.updated > 2500) {
@@ -87,7 +96,13 @@ export class AppInventory {
   }
   async resolve(ref, signal, { fresh = false, window = true } = {}) {
     signal?.throwIfAborted();
-    if (!window) { const app = this.known.get(ref); if (!app) throw new AppUnavailable(); return app; }
+    const selected = this.known.get(ref);
+    if (!window) { if (!selected) throw new AppUnavailable(); return selected; }
+    if (fresh && this.inspect) {
+      const app = selected?.windowId && await this.inspect(selected, { signal });
+      if (!app) throw new AppUnavailable();
+      return app;
+    }
     if (!this.apps.has(ref)) throw new AppUnavailable();
     await this.list("", signal, fresh); const app = this.apps.get(ref);
     if (!app?.windowId) throw new AppUnavailable();
@@ -99,25 +114,15 @@ export class AppInventory {
     try { return await job; } finally { this.launching.delete(ref); }
   }
   async showWindow(ref, signal) {
-    const app = await this.resolve(ref, signal, { fresh: true });
-    if (process.platform !== "win32" || !/^\d+$/.test(String(app.windowId)) || !Number.isSafeInteger(app.pid)) return false;
-    const script = `if (-not ('DshShowWindow' -as [type])) { Add-Type -TypeDefinition @'
-using System; using System.Runtime.InteropServices;
-public class DshShowWindow {
- [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr w, out uint p);
- [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr w);
- [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr w, int c);
- [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr w);
-}
-'@ }
-$w=[IntPtr]::new([long]${app.windowId});[uint32]$p=0
-[void][DshShowWindow]::GetWindowThreadProcessId($w,[ref]$p)
-if($p -eq ${app.pid}) { if([DshShowWindow]::IsIconic($w)){[void][DshShowWindow]::ShowWindowAsync($w,9)};[void][DshShowWindow]::SetForegroundWindow($w) }`;
-    await windowsWorker.run(script, { timeout: 5000, signal });
-    return true;
+    const app = await this.resolve(ref, signal, { window: false });
+    return !!(app.windowId && await this.inspect?.(app, { signal, present: true }));
   }
   async openWindow(ref, signal) {
     const selected = await this.resolve(ref, signal, { window: false });
+    if (selected.windowId && this.inspect) {
+      const current = await this.inspect(selected, { signal });
+      if (current) { this.attempted.delete(ref); return current; }
+    }
     await this.list("", signal, true);
     const current = this.apps.get(ref);
     if (current?.windowId) { this.attempted.delete(ref); return current; }

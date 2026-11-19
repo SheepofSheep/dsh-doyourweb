@@ -77,3 +77,31 @@ test("Windows helper reuses loaded types and restarts after cancellation", { ski
     assert.equal((await worker.run("'restarted'")).stdout, "restarted");
   } finally { worker.close(); }
 });
+
+test("an idle relay release keeps the uncertain-effect receipt for later inspection", async () => {
+  // Dropping the receipt with the relay would let the next call replay an action
+  // whose dispatch outcome is still unknown.
+  const engine = new BrowserEngine({ on() {}, off() {}, release() {} });
+  engine.receipts.set("tab", { actionId: "a", uncertainStep: 0, mayHaveLateEffects: true });
+  engine.receipts.set("done", { actionId: "b", completed: [0] });
+  engine.states.set("tab", { id: "s" });
+  engine.onRelease("tab");
+  engine.onRelease("done");
+  assert.equal(engine.states.size, 0, "the snapshot must be invalidated");
+  assert.equal(engine.receipts.get("tab")?.mayHaveLateEffects, true, "the receipt must survive");
+  assert.equal(engine.receipts.has("done"), false, "completed receipts need not outlive idle detach");
+});
+
+test("the configured snapshot budget also bounds action receipts", async () => {
+  const page = { evaluate: async () => ({ url: "https://example.com", epoch: 1 }), title: async () => "Budget",
+    locator: () => ({ ariaSnapshot: async () => "- button \"Go\" [ref=e1]\n" + "x".repeat(9000), click: async () => {} }) };
+  const engine = new BrowserEngine({ page: async () => page }, { snapshotChars: 600 });
+  // A snapshot is single-use, so each action needs its own read.
+  const read = await engine.read("tab");
+  const acted = await engine.act("tab", { snapshot: read.snapshot, steps: [{ op: "click", ref: "e1" }] });
+  assert.ok(acted.content.length <= 600, `post-action chunk ${acted.content.length} exceeded the 600 budget`);
+  // `summary` skips the trailing snapshot, so this receipt is bounded by boundAction.
+  const again = await engine.read("tab");
+  const summary = await engine.act("tab", { snapshot: again.snapshot, observe: "summary", steps: [{ op: "click", ref: "e1" }] });
+  assert.ok(JSON.stringify(summary).length <= 600, `receipt ${JSON.stringify(summary).length} exceeded the 600 budget`);
+});

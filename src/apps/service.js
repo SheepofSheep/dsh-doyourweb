@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile, mkdir, access } from "node:fs/promises";
+import { readFile, writeFile, mkdir, access, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { AppInventory, AppUnavailable, findExecutable } from "./processes.js";
 import { ConnectorCatalog, fingerprint, validateConnector } from "./catalog.js";
@@ -20,16 +20,33 @@ export const candidateSummary = c => ({ id: c.id, label: c.label, kind: c.kind, 
 export class Applications {
   constructor({ home, managementUrl, ask, inventory = new AppInventory(), icons = new AppIcons(), catalog, install = installConnector, connect = c => new McpConnection(c), run = runProcess } = {}) {
     this.home = home; this.managementUrl = managementUrl; this.ask = ask; this.inventory = inventory; this.icons = icons; this.install = install; this.makeConnection = connect; this.run = run;
-    this.settings = { askBeforeInstall: true, trustedPublishers: [], connectors: [], approved: {}, installations: {} };
+    this.settings = { askBeforeInstall: true, trustedPublishers: [], connectors: [], approved: {}, installations: {}, revoked: {} };
     this.catalog = catalog || new ConnectorCatalog({ home, custom: () => this.settings.connectors });
     this.plans = new Map(); this.connections = new Map(); this.candidates = new Map(); this.receipts = new Map(); this.snapshots = new Map(); this.queue = Promise.resolve(); this.writes = Promise.resolve(); this.lifetime = new AbortController(); this.jobs = new Set(); this.closed = false;
     this.revisions = new Map();
+    this.scopedRevisions = new Map(); this.activePlans = new Set();
   }
   async load() {
-    try { const state = JSON.parse(await readFile(path.join(this.home, "applications.json"), "utf8")); this.settings = { ...this.settings, ...state }; }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
+    try {
+      const state = JSON.parse(await readFile(path.join(this.home, "applications.json"), "utf8"));
+      if (!state || typeof state !== "object" || Array.isArray(state)
+        || (state.connectors !== undefined && !Array.isArray(state.connectors))
+        || (state.trustedPublishers !== undefined && (!Array.isArray(state.trustedPublishers) || state.trustedPublishers.some(p => typeof p !== "string")))
+        || (state.askBeforeInstall !== undefined && typeof state.askBeforeInstall !== "boolean")
+        || ["approved", "installations", "revoked"].some(key => state[key] !== undefined && (!state[key] || typeof state[key] !== "object" || Array.isArray(state[key])))) throw new Error("Invalid application settings");
+      const connectors = (state.connectors || []).map(validateConnector);
+      this.settings = { ...this.settings, ...state, connectors };
+    } catch (error) { if (error.code !== "ENOENT") this.settingsError = `Could not load applications.json: ${error.message}. Application settings use safe defaults; saving settings replaces the damaged file.`; }
   }
-  async persist() { const data = JSON.stringify(this.settings); this.writes = this.writes.catch(() => {}).then(async () => { await mkdir(this.home, { recursive: true }); await writeFile(path.join(this.home, "applications.json"), data, { mode: 0o600 }); }); return this.writes; }
+  async persist() {
+    const data = JSON.stringify(this.settings);
+    this.writes = this.writes.catch(() => {}).then(async () => {
+      await mkdir(this.home, { recursive: true });
+      const temporary = path.join(this.home, `.applications-${randomUUID()}.tmp`);
+      try { await writeFile(temporary, data, { mode: 0o600 }); await rename(temporary, path.join(this.home, "applications.json")); this.settingsError = undefined; }
+      finally { await rm(temporary, { force: true }); }
+    }); return this.writes;
+  }
   async list(query, signal) { return this.icons.decorate((await this.inventory.list(query, signal)).filter(app => app.pid && app.windowId), signal); }
   async discover(ref, options = {}) {
     const app = await this.inventory.resolve(ref, options.signal, { window: false });
@@ -72,8 +89,16 @@ export class Applications {
   }
   async revoke(id) {
     const connection = this.connections.get(id); if (!connection) throw new Error("Connection is no longer active");
-    for (const [key, value] of Object.entries(this.settings.approved)) if (value.connector === connection.candidate.id) delete this.settings.approved[key];
-    await this.invalidateConnector(connection.candidate.id); await this.persist(); return { ok: true };
+    for (const [key, value] of Object.entries(this.settings.approved)) if (value.connector === connection.candidate.id && value.app === connection.app) delete this.settings.approved[key];
+    this.settings.revoked[`${connection.app}:${connection.candidate.id}`] = true;
+    await this.invalidateConnector(connection.candidate.id, connection.app); await this.persist(); return { ok: true };
+  }
+  async removeConnector(id) {
+    this.settings.connectors = this.settings.connectors.filter(c => c.id !== id);
+    for (const [key, value] of Object.entries(this.settings.approved)) if (value.connector === id) delete this.settings.approved[key];
+    delete this.settings.installations[id];
+    this.catalog.cache.clear(); this.candidates.clear();
+    await this.invalidateConnector(id); await this.persist(); return { ok: true };
   }
   async setPolicy({ askBeforeInstall, trustedPublishers }) {
     if (typeof askBeforeInstall !== "boolean" || !Array.isArray(trustedPublishers) || trustedPublishers.some(p => typeof p !== "string" || p.length > 160)) throw new Error("Invalid installation policy");
@@ -83,7 +108,7 @@ export class Applications {
     await this.inventory.resolve(ref, signal, { window: false });
     if (!this.candidates.get(ref)?.has(id)) await this.discover(ref, { signal });
     let c = this.candidates.get(ref)?.get(id); if (!c) throw new Error("Connector is not in this application's discovery results");
-    c = await preparePackage(c, signal);
+    c = await preparePackage(c, signal, { home: this.home });
     const sourceFingerprint = fingerprint(c);
     const saved = this.settings.installations[id];
     if (saved?.fingerprint === fingerprint(c)) {
@@ -91,46 +116,52 @@ export class Applications {
     }
     return { ...c, sourceFingerprint };
   }
-  async invalidateConnector(id) {
-    this.revisions.set(id, (this.revisions.get(id) || 0) + 1);
-    for (const plan of this.plans.values()) if (plan.candidate.id === id && ["pending", "installing"].includes(plan.status)) plan.status = "cancelled";
-    for (const [key, connection] of this.connections) if (connection.candidate.id === id) {
-      this.connections.delete(key); await connection.transport?.close();
+  async invalidateConnector(id, app) {
+    const revisions = app ? this.scopedRevisions : this.revisions, revisionKey = app ? `${app}:${id}` : id;
+    revisions.set(revisionKey, (revisions.get(revisionKey) || 0) + 1);
+    for (const plan of new Set([...this.plans.values(), ...this.activePlans])) if (plan.candidate.id === id && (!app || plan.app === app) && [undefined, "pending", "installing"].includes(plan.status)) { plan.status = "cancelled"; plan.controller?.abort(new Error("Connector changed or was revoked")); }
+    const closing = [];
+    for (const [key, connection] of this.connections) if (connection.candidate.id === id && (!app || connection.app === app)) {
+      this.connections.delete(key); connection.controller?.abort(new Error("Connector changed or was revoked")); closing.push(connection.transport?.close());
     }
+    await Promise.allSettled(closing);
   }
   invalidateSnapshots(ref) { for (const key of this.snapshots.keys()) if (key.endsWith(`:${ref}`)) this.snapshots.delete(key); }
   checkPlan(plan) {
     if (this.closed) throw new Error("Application service stopped");
-    if (plan.status === "cancelled" || plan.revision !== (this.revisions.get(plan.candidate.id) || 0)) throw new Error("Connector changed or was revoked; request a fresh connection approval");
+    if (plan.status === "cancelled" || plan.revision !== (this.revisions.get(plan.candidate.id) || 0)
+      || plan.scopedRevision !== (this.scopedRevisions.get(`${plan.app}:${plan.candidate.id}`) || 0)) throw new Error("Connector changed or was revoked; request a fresh connection approval");
   }
   async connect(ref, id, execution = {}) {
     if (this.closed) throw new Error("Application service stopped");
     const revision = this.revisions.get(id) || 0;
+    const scopedRevision = this.scopedRevisions.get(`${ref}:${id}`) || 0;
     execution = { ...execution, signal: AbortSignal.any([this.lifetime.signal, ...(execution.signal ? [execution.signal] : [])]) };
     const app = await this.inventory.resolve(ref, execution.signal, { window: false });
     const existing = [...this.connections.values()].find(c => c.app === ref && c.session === execution.session && c.candidate.id === id);
     if (existing) return this.connectionResult(existing);
     const c = await this.candidate(ref, id, execution.signal);
-    this.checkPlan({ candidate: c, revision });
+    this.checkPlan({ app: ref, candidate: c, revision, scopedRevision });
     // Window presentation is best effort; headless MCPs remain usable.
     if (c.kind === "mcp") await this.inventory.showWindow?.(ref, execution.signal).catch(() => {});
     if (c.requiresConfiguration || c.requiredEnvironment?.some(name => !c.env?.[name]) || c.requiredHeaders?.some(name => !c.headers?.[name])) {
       return { status: "configuration_required", connector: candidateSummary(c), management: this.managementUrl, message: "Add the missing arguments/environment/headers in the connector editor. Never paste secrets into chat." };
     }
     const hash = c.sourceFingerprint || fingerprint(c);
-    const approvalKey = c.kind === "desktop" ? `${hash}:${ref}:${execution.session}` : hash;
+    const approvalKey = c.kind === "desktop" ? `${hash}:${ref}:${execution.session}` : `${hash}:${ref}`;
     const approved = this.settings.approved[approvalKey];
     const trustedAutoInstall = !this.settings.askBeforeInstall && this.settings.trustedPublishers.includes(c.publisher) && c.kind !== "desktop";
-    if ((approved && (c.installed || trustedAutoInstall)) || (c.kind === "mcp" && c.installed && !c.url && !c.proposed)) return this.perform({ app: ref, candidate: c, session: execution.session, fingerprint: hash, revision }, execution.signal);
+    if ((approved && (c.installed || trustedAutoInstall)) || (c.kind === "mcp" && c.installed && !c.url && !c.proposed && !this.settings.revoked[`${ref}:${id}`])) return this.perform({ app: ref, candidate: c, session: execution.session, fingerprint: hash, revision, scopedRevision }, execution.signal);
     for (const [key, plan] of this.plans) if (Date.now() - plan.created > 600000) this.plans.delete(key);
     const pending = [...this.plans.values()].find(plan => plan.app === ref && plan.session === execution.session && plan.fingerprint === hash && plan.status === "pending");
-    const plan = pending || { id: randomUUID(), app: ref, appName: app.name, window: app.title, candidate: c, session: execution.session, fingerprint: hash, approvalKey, reviewed: fingerprint(c), revision, status: "pending", created: Date.now() };
+    const plan = pending || { id: randomUUID(), app: ref, appName: app.name, window: app.title, candidate: c, session: execution.session, fingerprint: hash, approvalKey, reviewed: fingerprint(c), revision, scopedRevision, status: "pending", created: Date.now() };
     this.plans.set(plan.id, plan);
     if (this.plans.size > 100) this.plans.delete(this.plans.keys().next().value);
     if (this.ask && execution.agent) {
       const question = `允许${c.installed ? "连接" : "下载、安装并连接"} ${c.label}，用于 ${app.name}：${app.title}？`;
       const detail = JSON.stringify({ source: c.publisher || c.docs, version: c.version || c.package?.version,
         kind: c.kind, command: c.command, args: c.args, cwd: c.cwd, url: c.url, package: c.package, install: c.installed ? undefined : c.install,
+        dependencyLock: c.dependencyLock ? { sha256: c.dependencyLock.sha256, packages: c.dependencyLock.packages } : undefined,
         desktopAccess: c.kind === "desktop" ? "读取此窗口、截图及鼠标键盘操作；默认不切换前台" : undefined,
         warning: "连接器会运行本机代码。npm 安装禁用生命周期脚本；不自动接受系统提权或软件许可。" }, null, 2);
       try {
@@ -160,14 +191,16 @@ export class Applications {
         this.settings.connectors = this.settings.connectors.filter(c => c.id !== plan.candidate.id).concat(plan.candidate);
         this.catalog.cache.clear();
       }
-      this.settings.approved[plan.approvalKey] = { approvedAt: new Date().toISOString(), connector: plan.candidate.id };
+      this.settings.approved[plan.approvalKey] = { approvedAt: new Date().toISOString(), connector: plan.candidate.id, app: plan.app };
+      delete this.settings.revoked[`${plan.app}:${plan.candidate.id}`];
       await this.persist(); plan.status = "connected"; return result;
     } catch (error) { if (plan.status !== "cancelled") plan.status = "failed"; plan.error = error.message; throw error; }
   }
   deny(id) { const plan = this.plans.get(id); if (plan?.status === "pending") plan.status = "denied"; return { ok: true }; }
   async perform(plan, signal) {
-    const job = this.performConnection(plan, signal); this.jobs.add(job);
-    try { return await job; } finally { this.jobs.delete(job); }
+    plan.controller = new AbortController(); this.activePlans.add(plan);
+    const job = this.performConnection(plan, AbortSignal.any([plan.controller.signal, ...(signal ? [signal] : [])])); this.jobs.add(job);
+    try { return await job; } finally { this.jobs.delete(job); this.activePlans.delete(plan); }
   }
   async performConnection(plan, signal) {
     this.checkPlan(plan);
@@ -184,7 +217,7 @@ export class Applications {
     if (c.kind !== "cli") { transport = this.makeConnection(c); await transport.connect(signal); }
     try { await this.inventory.resolve(plan.app, signal, { window: false }); this.checkPlan(plan); }
     catch (error) { await transport?.close(); throw error; }
-    const connection = { id: randomUUID(), app: plan.app, session: plan.session, candidate: c, transport };
+    const connection = { id: randomUUID(), app: plan.app, session: plan.session, candidate: c, transport, controller: plan.controller };
     this.connections.set(connection.id, connection); return this.connectionResult(connection);
   }
   connectionResult(connection, query = "") {
@@ -205,26 +238,38 @@ export class Applications {
     execution = { ...execution, signal: AbortSignal.any([this.lifetime.signal, ...(execution.signal ? [execution.signal] : [])]) };
     await this.inventory.resolve(ref, execution.signal, { window: false });
     const c = this.getConnection(options.connection, ref, execution.session);
+    if (c.controller) execution.signal = AbortSignal.any([execution.signal, c.controller.signal]);
     if (c.candidate.kind === "desktop") throw new Error("Use app_desktop for scoped, snapshot-checked desktop operations");
-    const inspect = c.candidate.kind === "cli" ? ["--help", "--version", "status", "doctor"].includes(options.argv?.[0]) : c.transport.tools.get(options.tool)?.annotations?.readOnlyHint === true;
-    if (this.receipts.get(ref)?.mayHaveEffects && !inspect) throw new Error("Previous operation has uncertain effects; inspect the current app state with a read-only tool or app_desktop before issuing another mutation");
+    // `annotations` is supplied by the remote MCP server and is untrusted. A
+    // read-only declaration may still be inspected with, but it must never clear a
+    // receipt raised by a different channel: otherwise a server that labels a
+    // destructive tool `readOnlyHint` could release the lock a desktop or CLI
+    // action left behind, and the model would replay an uncertain effect.
+    const receipt = this.receipts.get(ref);
+    const inspect = c.candidate.kind === "cli"
+      ? ["--help", "--version", "status", "doctor"].includes(options.argv?.[0])
+      : c.transport?.tools.get(options.tool)?.annotations?.readOnlyHint === true;
+    if (receipt?.mayHaveEffects && !inspect) throw new Error("Previous operation has uncertain effects; inspect the current app state with a read-only tool or app_desktop before issuing another mutation");
     try {
       let result;
       if (c.candidate.kind === "cli") {
         if (!Array.isArray(options.argv) || options.argv.some(arg => typeof arg !== "string" || arg.includes("\0"))) throw new Error("CLI calls require a literal argv array");
         if (!inspect) this.invalidateSnapshots(ref);
         result = await this.run(c.candidate.command, [...(c.candidate.args || []), ...options.argv], { cwd: c.candidate.cwd, env: c.candidate.env, signal: execution.signal, timeout: options.timeout || 30000, maxChars: options.limit || 8000 });
-        if (result.exitCode !== 0) { if (!inspect) this.receipts.set(ref, { kind: "cli", exitCode: result.exitCode, mayHaveEffects: true }); }
-        else this.receipts.delete(ref);
+        if (result.exitCode !== 0) { if (!inspect) this.receipts.set(ref, { kind: "cli", connection: c.id, exitCode: result.exitCode, mayHaveEffects: true }); }
+        else if (!receipt || receipt.connection === c.id || receipt.kind === "cli" && !receipt.connection) this.receipts.delete(ref);
       } else {
         if (!inspect) this.invalidateSnapshots(ref);
         const raw = await c.transport.call(options.tool, options.arguments || {}, { signal: execution.signal, timeout: options.timeout || 30000 });
         result = await projectMcpResult(raw, path.join(this.home, "captures"), options.limit || 8000);
-        if (raw.isError && !inspect) this.receipts.set(ref, { kind: "mcp", tool: options.tool, mayHaveEffects: true }); else if (inspect && !raw.isError) this.receipts.delete(ref);
+        if (raw.isError && !inspect) this.receipts.set(ref, { kind: "mcp", connection: c.id, tool: options.tool, mayHaveEffects: true });
+        // Only a call made against this same MCP connection may clear its own
+        // receipt; a desktop/CLI receipt needs a real desktop or CLI read.
+        else if (inspect && !raw.isError && (!receipt || receipt.connection === c.id)) this.receipts.delete(ref);
       }
       return { app: ref, connection: c.id, result, lastAction: this.receipts.get(ref) };
     } catch (error) {
-      if (error instanceof UncertainOperation) this.receipts.set(ref, { kind: c.candidate.kind, mayHaveEffects: true, error: clip(error.message, 500) });
+      if (error instanceof UncertainOperation) this.receipts.set(ref, { kind: c.candidate.kind, connection: c.id, mayHaveEffects: true, error: clip(error.message, 500) });
       throw error;
     }
   }
@@ -235,21 +280,25 @@ export class Applications {
     return this.desktop(ref, { ...options, steps: typingSteps(options) }, execution);
   }
   async desktop(ref, options, execution) {
-    execution = { ...execution, signal: AbortSignal.any([this.lifetime.signal, ...(execution.signal ? [execution.signal] : [])]) };
+    const wantsRead = !options.steps && (!options.tool || reads.has(options.tool) || ["focus_window", "controls", "capabilities"].includes(options.tool));
+    const deadline = Date.now() + (options.timeout || (wantsRead ? 8000 : 15000));
+    execution = { ...execution, signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(Math.max(1, deadline - Date.now())), ...(execution.signal ? [execution.signal] : [])]) };
     const work = async () => {
       execution.signal.throwIfAborted();
       const focusing = options.tool === "focus_window";
       const paging = options.tool === "controls";
       const wantsRead = !options.steps && (!options.tool || reads.has(options.tool) || focusing || paging || options.tool === "capabilities");
-      let app = wantsRead ? await this.inventory.ensureWindow(ref, execution.signal) : await this.inventory.resolve(ref, execution.signal, { fresh: true });
+      let app = wantsRead ? await this.inventory.ensureWindow(ref, execution.signal) : await this.inventory.resolve(ref, execution.signal, { window: false });
       let c = [...this.connections.values()].find(value => value.app === ref && value.session === execution.session && value.candidate.id === "cua-driver");
       if (!c) {
-        await this.inventory.resolve(ref, execution.signal, { fresh: true });
+        if (!wantsRead) app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
         const connected = await this.connect(ref, "cua-driver", execution);
         if (connected.status !== "connected") return connected;
         c = this.getConnection(connected.connection, ref, execution.session);
-        app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
+        if (wantsRead) app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
       }
+      if (c.controller) execution.signal = AbortSignal.any([execution.signal, c.controller.signal]);
+      execution.signal.throwIfAborted();
       const window = `${app.pid}:${app.windowId}:${app.started}`;
       const presenting = wantsRead && !paging && options.tool !== "capabilities" && (focusing || (options.foreground !== false
         && (options.foreground === true || c.presentedWindow !== window || geometry(app).minimized)));
@@ -290,7 +339,8 @@ export class Applications {
             if (properties[name]) args[name] = Number.isSafeInteger(args[name]) ? Math.max(1, Math.min(max, args[name])) : fallback;
           }
         } else {
-          args.delivery_mode = options.foreground ? "foreground" : "background";
+          if (properties.delivery_mode) args.delivery_mode = options.foreground ? "foreground" : "background";
+          else delete args.delivery_mode;
           resolveElement(args, snapshot?.data, properties);
         }
         try { c.transport.validate?.(tool, args); }
@@ -305,9 +355,10 @@ export class Applications {
         if (snapshot.repeats >= 2) return { app: ref, status: "no_progress", stop: true, retryable: false, message: "Repeated inspection without an action. Stop polling/screenshots; finish the task or ask the user what changed." };
         if (Date.now() - snapshot.time < 3000) { snapshot.repeats++; return { ...snapshot.response, cached: true, unchanged: true }; }
       }
-      if (!reading) app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
       let coordinates;
       if (!reading) {
+        app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
+        if (window !== `${app.pid}:${app.windowId}:${app.started}`) throw new AppUnavailable();
         const current = geometry(app);
         // Guard the actual HWND before the driver computes its SendInput origin.
         if (current.minimized) throw new Error("Selected window is minimized or has sentinel coordinates. Use app_desktop tool:focus_window to restore and read it; no input was sent.");
@@ -320,13 +371,13 @@ export class Applications {
         // Recheck after a human confirmation; never apply stale input to a replacement window.
         if (options.foreground) {
           app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
+          if (window !== `${app.pid}:${app.windowId}:${app.started}`) throw new AppUnavailable();
           if (geometry(app).minimized) throw new Error("Window became minimized while waiting; focus_window and read again. No input was sent.");
           coordinates = prepared.map(step => checkCoordinates(step.args, geometry(app), snapshot.geometry, snapshot.inventoryGeometry)).filter(Boolean);
         }
         if (Date.now() - snapshot.time > 90000) throw new Error("Read this app window again: the desktop snapshot expired while waiting for confirmation");
         this.invalidateSnapshots(ref);
       }
-      const deadline = Date.now() + (options.timeout || (reading ? 8000 : 15000));
       const results = [];
       try {
         for (const { tool, args } of prepared) {
@@ -367,6 +418,7 @@ export class Applications {
         let observation;
         if (options.expect) {
           app = await this.inventory.resolve(ref, execution.signal, { fresh: true });
+          if (window !== `${app.pid}:${app.windowId}:${app.started}`) throw new AppUnavailable();
           const tool = c.transport.tools.has("get_window_state") ? "get_window_state" : "get_app_state";
           const properties = c.transport.tools.get(tool).inputSchema.properties;
           const args = { pid: app.pid, window_id: numericSchema(properties.window_id) ? Number(app.windowId) : app.windowId };
@@ -399,9 +451,10 @@ export class Applications {
     this.queue = result.catch(() => {}); return result;
   }
   state() {
-    return { policy: { askBeforeInstall: this.settings.askBeforeInstall, trustedPublishers: this.settings.trustedPublishers },
+    return { settingsError: this.settingsError, policy: { askBeforeInstall: this.settings.askBeforeInstall, trustedPublishers: this.settings.trustedPublishers },
       connectors: this.settings.connectors.map(c => ({ ...candidateSummary(c), apps: c.apps, command: c.command, args: c.args, url: c.url, cwd: c.cwd, environmentNames: Object.keys(c.env || {}), headerNames: Object.keys(c.headers || {}) })),
       plans: [...this.plans.values()].map(p => ({ id: p.id, appName: p.appName, window: p.window, status: p.status, error: p.error, connector: candidateSummary(p.candidate),
+        dependencyLock: p.candidate.dependencyLock ? { sha256: p.candidate.dependencyLock.sha256, packages: p.candidate.dependencyLock.packages } : undefined,
         command: p.candidate.command, args: p.candidate.args, url: p.candidate.url, install: p.candidate.installed ? undefined : p.candidate.install, created: p.created })),
       connections: [...this.connections.values()].map(c => ({ id: c.id, app: c.app, connector: candidateSummary(c.candidate) })) };
   }

@@ -155,4 +155,24 @@ test("annotation collapse, edge storage and restoration preserve drafts without 
   assert.equal(sent.length, 3);
   assert.equal(sent[2].comment, "已编辑的未完成草稿");
   assert.equal(await inspect(".draft-list", element => element.children.length), 0, "accepted notes leave the local pending list");
+
+  await page.evaluate(() => {
+    for (let index = 0; index < 2; index++) {
+      const section = document.createElement("section"); document.body.append(section);
+      let parent = section;
+      for (let depth = 0; depth < 12; depth++) { const div = document.createElement("div"); parent.append(div); parent = div; }
+      const button = document.createElement("button"); button.textContent = `Deep target ${index}`; parent.append(button);
+    }
+  });
+  await click(control("选择页面元素并批注"));
+  await page.getByRole("button", { name: "Deep target 1", exact: true }).click();
+  const deepSelector = await inspect("code", element => element.textContent);
+  assert.ok(deepSelector.split(" > ").length > 7);
+  assert.equal(await page.evaluate(selector => document.querySelector(selector)?.textContent, deepSelector), "Deep target 1");
+  await inspect("textarea", element => { element.value = "深层元素截图"; });
+  await inspect("input", element => { element.checked = true; });
+  await page.getByRole("button", { name: "Deep target 1", exact: true }).evaluate(element => element.replaceWith(element.cloneNode(true)));
+  await click(".primary");
+  assert.match(await inspect("output", element => element.textContent), /元素已变化/);
+  assert.equal(sent.length, 3, "a replacement at the same selector must not capture a different element");
 });

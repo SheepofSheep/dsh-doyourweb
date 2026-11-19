@@ -74,6 +74,7 @@ test("typing exposes text+Enter, key chords and explicit pixel typing without in
   assert.equal(steps[1].arguments.key, "Enter");
   assert.deepEqual(typingSteps({ keys: ["ctrl", "a"] })[0], { tool: "hotkey", arguments: { keys: ["ctrl", "a"] } });
   assert.equal(typingSteps({ mode: "keys", text: "中文", x: 20, y: 30 })[0].arguments.text, "中文");
+  assert.deepEqual(typingSteps({ mode: "value", text: "replace", element_index: 1 })[0], { tool: "set_value", arguments: { element_index: 1, value: "replace" } });
   assert.throws(() => typingSteps({ mode: "keys", text: "x", element_index: 1 }), /omit the UIA/);
 });
 

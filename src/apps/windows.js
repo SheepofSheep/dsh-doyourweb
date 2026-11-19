@@ -1,6 +1,4 @@
-export const windowsInventory = String.raw`$ErrorActionPreference='SilentlyContinue'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new()
-if (-not ('DshVisibleWindows' -as [type])) { Add-Type -TypeDefinition @'
+const windowsApi = String.raw`if (-not ('DshVisibleWindows' -as [type])) { Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -17,7 +15,10 @@ public static class DshVisibleWindows {
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc callback, IntPtr param);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr hwnd, int command);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
@@ -26,31 +27,66 @@ public static class DshVisibleWindows {
     [DllImport("user32.dll", EntryPoint="GetWindowLongW")] private static extern int GetLong32(IntPtr hwnd, int index);
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
     [DllImport("dwmapi.dll")] private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out Rect value, int size);
+    [DllImport("kernel32.dll")] private static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] private static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+
+    private static Row Read(IntPtr hwnd, IntPtr foreground, int order) {
+        if (!IsWindowVisible(hwnd)) return null;
+        var title = new StringBuilder(2048); GetWindowText(hwnd, title, title.Capacity);
+        if (title.Length == 0) return null;
+        uint pid;
+        if (GetWindowThreadProcessId(hwnd, out pid) == 0) return null;
+        var name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
+        int cloak = 0; DwmGetWindowAttribute(hwnd, 14, out cloak, 4);
+        Rect legacy, box;
+        if (!GetWindowRect(hwnd, out legacy)) return null;
+        if (DwmGetWindowAttribute(hwnd, 9, out box, Marshal.SizeOf(typeof(Rect))) != 0) box = legacy;
+        long styles = IntPtr.Size == 8 ? GetLong64(hwnd, -20).ToInt64() : GetLong32(hwnd, -20);
+        return new Row { pid=(int)pid, windowId=hwnd.ToInt64().ToString(), title=title.ToString(), className=name.ToString(),
+            visible=true, cloaked=cloak!=0, toolWindow=(styles & 0x80)!=0, noActivate=(styles & 0x08000000)!=0,
+            minimized=IsIconic(hwnd) || legacy.left<=-30000 || legacy.top<=-30000,
+            foreground=hwnd==foreground, x=box.left, y=box.top, inputX=legacy.left, inputY=legacy.top,
+            width=box.right-box.left, height=box.bottom-box.top, zOrder=order };
+    }
+
+    public static Row Inspect(long handle, int pid, long started, bool present) {
+        var hwnd = new IntPtr(handle);
+        uint owner;
+        // GA_ROOT matches the top-level windows from EnumWindows.
+        if (GetAncestor(hwnd, 2) != hwnd || GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid) return null;
+        var process = OpenProcess(0x1000, false, (uint)pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (process == IntPtr.Zero) return null;
+        try {
+            long creation, exit, kernel, user;
+            if (!GetProcessTimes(process, out creation, out exit, out kernel, out user) ||
+                DateTime.FromFileTimeUtc(creation).Ticks != started) return null;
+            var row = Read(hwnd, GetForegroundWindow(), 0);
+            if (row == null || row.pid != pid || row.cloaked || row.toolWindow || row.noActivate ||
+                String.IsNullOrWhiteSpace(row.title) || (!row.minimized && (row.width < 64 || row.height < 32))) return null;
+            if (present) {
+                if (IsIconic(hwnd)) ShowWindowAsync(hwnd, 9);
+                SetForegroundWindow(hwnd);
+            }
+            return row;
+        } finally { CloseHandle(process); }
+    }
+
     public static Row[] List() {
         var rows = new List<Row>(); var foreground = GetForegroundWindow(); int order = 0;
         EnumProc callback = delegate(IntPtr hwnd, IntPtr unused) {
-            int z = order++;
-            if (!IsWindowVisible(hwnd)) return true;
-            var title = new StringBuilder(2048); GetWindowText(hwnd, title, title.Capacity);
-            if (title.Length == 0) return true;
-            uint pid; GetWindowThreadProcessId(hwnd, out pid);
-            var name = new StringBuilder(256); GetClassName(hwnd, name, name.Capacity);
-            int cloak = 0; DwmGetWindowAttribute(hwnd, 14, out cloak, 4);
-            Rect legacy, box; GetWindowRect(hwnd, out legacy);
-            if (DwmGetWindowAttribute(hwnd, 9, out box, Marshal.SizeOf(typeof(Rect))) != 0) box = legacy;
-            long styles = IntPtr.Size == 8 ? GetLong64(hwnd, -20).ToInt64() : GetLong32(hwnd, -20);
-            rows.Add(new Row { pid=(int)pid, windowId=hwnd.ToInt64().ToString(), title=title.ToString(), className=name.ToString(),
-                visible=true, cloaked=cloak!=0, toolWindow=(styles & 0x80)!=0, noActivate=(styles & 0x08000000)!=0,
-                minimized=IsIconic(hwnd) || legacy.left<=-30000 || legacy.top<=-30000,
-                foreground=hwnd==foreground, x=box.left, y=box.top, inputX=legacy.left, inputY=legacy.top,
-                width=box.right-box.left, height=box.bottom-box.top, zOrder=z });
+            var row = Read(hwnd, foreground, order++);
+            if (row != null) rows.Add(row);
             return true;
         };
         EnumWindows(callback, IntPtr.Zero); return rows.ToArray();
     }
 }
 '@ }
-if (-not ('DshVisibleWindows' -as [type])) { throw 'Windows window inventory could not initialize' }
+if (-not ('DshVisibleWindows' -as [type])) { throw 'Windows window inventory could not initialize' }`;
+
+export const windowsInventory = String.raw`$ErrorActionPreference='SilentlyContinue'
+${windowsApi}
 $processes=@{}
 @(foreach ($window in [DshVisibleWindows]::List()) {
     if (-not $processes.ContainsKey($window.pid)) {
@@ -73,6 +109,12 @@ $processes=@{}
         minimized=$window.minimized; foreground=$window.foreground; zOrder=$window.zOrder
     }
 }) | ConvertTo-Json -Compress`;
+
+export function windowInspection(app, present) {
+  // The worker only interpolates numeric values issued by the window inventory.
+  if (!Number.isSafeInteger(app.pid) || app.pid <= 0 || !/^-?\d+$/.test(app.windowId) || !/^\d+$/.test(app.started)) return;
+  return `${windowsApi}\n[DshVisibleWindows]::Inspect([long]'${app.windowId}', ${app.pid}, [long]'${app.started}', $${present ? "true" : "false"}) | ConvertTo-Json -Compress`;
+}
 
 const shellProcesses = /^(?:shellexperiencehost|startmenuexperiencehost|searchhost|searchapp|textinputhost|widgets|widgetservice|widgetboard|lockapp)$/i;
 const shellClasses = /^(?:Progman|WorkerW|Shell_TrayWnd|Shell_SecondaryTrayWnd|tooltips_class32|MSCTFIME UI|IME)$/i;

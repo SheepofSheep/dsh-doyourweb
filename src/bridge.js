@@ -11,6 +11,8 @@ import { extensionId, Pairings, pinnedExtensionId } from "./pairing.js";
 import { canControl, parseRef, tabRef } from "./protocol.js";
 import { managementPage } from "./manage.js";
 import { Diagnostics } from "./diagnostics.js";
+import { LocalApproval, approvalScript } from "./auth.js";
+import { bridgeProtocolRevision } from "../extension/protocol.js";
 
 export { extensionId } from "./pairing.js";
 
@@ -35,7 +37,7 @@ export class BrowserBridge extends EventEmitter {
     this.detachments = new Map();
     this.idleTimeoutMs = idleTimeoutMs;
     this.pairings = new Pairings();
-    this.setupKey = randomBytes(16).toString("hex");
+    this.approval = new LocalApproval();
     this.sequence = 0;
     this.diagnostics = diagnostics;
   }
@@ -114,6 +116,11 @@ export class BrowserBridge extends EventEmitter {
     return true;
   }
 
+  approvalUrl(scope) {
+    if (!["setup", "manage"].includes(scope)) throw new Error("Invalid approval scope");
+    return `http://127.0.0.1:${this.port}/${scope}#approve=${this.approval.invite(scope)}`;
+  }
+
   acceptPairing(ws) {
     const pairing = this.pairings.request(ws);
     if (pairing === undefined) return ws.close(1008, "Too many pairing requests");
@@ -132,11 +139,12 @@ export class BrowserBridge extends EventEmitter {
   handleHttp(request, response) {
     if (request.headers.host !== `127.0.0.1:${this.port}`) { response.writeHead(403).end(); return; }
     const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+    if (pathname === "/auth/session" && request.method === "POST") return this.handleApproval(request, response);
     if (pathname === "/manage/api" && request.method === "POST") return this.handleManagement(request, response);
     if (request.method === "POST" && pathname === "/setup/pair") return this.handlePairPost(request, response);
     if (request.method !== "GET") { response.writeHead(405).end(); return; }
     if (pathname === "/manage") {
-      const { html, nonce } = managementPage(this.setupKey);
+      const { html, nonce } = managementPage();
       response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
         "Content-Security-Policy": `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'` });
       response.end(html); return;
@@ -147,13 +155,14 @@ export class BrowserBridge extends EventEmitter {
     // `chrome://`/`edge://`, so opening the extension manager stays a user action.
     const nonce = randomBytes(16).toString("base64");
     response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
-      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'` });
+      "Referrer-Policy": "no-referrer",
+      "Content-Security-Policy": `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'` });
     response.end(this.setupPage(nonce));
   }
 
   handleManagement(request, response) {
     const origin = `http://127.0.0.1:${this.port}`;
-    if (!sameSecret(request.headers["x-dsh-key"], this.setupKey)
+    if (!this.approval.permits(request.headers["x-dsh-key"], "manage")
       || (request.headers.origin && request.headers.origin !== origin)
       || (request.headers["sec-fetch-site"] && request.headers["sec-fetch-site"] !== "same-origin")
       || request.headers["content-type"]?.split(";")[0] !== "application/json") { response.writeHead(403).end(); return; }
@@ -171,13 +180,29 @@ export class BrowserBridge extends EventEmitter {
     });
   }
 
+  handleApproval(request, response) {
+    if ((request.headers.origin && request.headers.origin !== `http://127.0.0.1:${this.port}`)
+      || (request.headers["sec-fetch-site"] && request.headers["sec-fetch-site"] !== "same-origin")
+      || request.headers["content-type"]?.split(";")[0] !== "application/json") { response.writeHead(403).end(); return; }
+    let body = "", oversized = false;
+    request.on("data", chunk => { body += chunk; if (Buffer.byteLength(body) > 1024) { oversized = true; response.writeHead(413).end(); request.destroy(); } });
+    request.on("end", () => {
+      if (oversized) return;
+      let value;
+      try { value = JSON.parse(body); } catch { response.writeHead(400).end(); return; }
+      const key = this.approval.exchange(value?.secret, value?.scope);
+      if (!key) { response.writeHead(403).end(); return; }
+      response.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ key }));
+    });
+  }
+
   setupPage(nonce) {
     const pending = this.pairings.list();
     const requests = pending.map(entry => `<li><strong>&#39564;&#35777;&#30721; ${escapeHtml(entry.code)}</strong>
-      <form method="post" action="/setup/pair"><input type="hidden" name="key" value="${escapeHtml(this.setupKey)}">
+      <form method="post" action="/setup/pair"><input type="hidden" name="key" value="">
       <input type="hidden" name="id" value="${escapeHtml(entry.id)}">
-      <button name="action" value="allow">&#20801;&#35768;</button>
-      <button name="action" value="deny">&#25298;&#32477;</button></form></li>`).join("");
+      <button name="action" value="allow" disabled>&#20801;&#35768;</button>
+      <button name="action" value="deny" disabled>&#25298;&#32477;</button></form></li>`).join("");
     const copy = (label, value) => `<button type="button" class="copy" data-copy="${escapeHtml(value)}">${label}</button>`;
     const connected = this.profiles.size > 0;
     const install = `<div class="step"><span class="number">1</span><div><h2>添加浏览器扩展</h2><p>打开扩展管理页，启用开发者模式，选择「加载解压的扩展」。</p><div class="actions">${copy("复制 Edge 管理页地址", "edge://extensions")}${copy("复制 Chrome 管理页地址", "chrome://extensions")}</div><div class="path"><code>${escapeHtml(this.extensionPath)}</code>${copy("复制扩展目录路径", this.extensionPath)}</div><p class="hint">将目录路径粘贴到文件选择框；macOS 可按 ⇧⌘G。已安装可直接进行下一步。</p></div></div>`;
@@ -186,8 +211,11 @@ export class BrowserBridge extends EventEmitter {
       ${connected ? `<section class="success"><h2>连接已就绪</h2><p>回到 DSH，在输入框键入 <kbd>@</kbd>，选择需要使用的标签页。</p><p class="hint">已连接 ${this.profiles.size} 个浏览器配置。需要标注页面时，打开扩展并点击「批注当前页面」。</p></section><details><summary>连接另一个浏览器</summary>${install}</details>` : `<section class="card">${pending.length ? `<details><summary>扩展已发来请求 · 查看安装步骤</summary>${install}</details>` : install}</section>`}
       ${!connected || requests ? `<section class="card step"><span class="number">2</span><div><h2>核对验证码，确认连接</h2><p>与扩展弹窗中的 4 位验证码一致后，点击允许。</p>${requests ? `<ul class="requests">${requests}</ul>` : `<div class="waiting"><span class="dot"></span>等待扩展发来请求…</div><p class="hint">安装后会自动出现，无需手动输入验证码。</p>`}</div></section>` : ""}
       <details class="help"><summary>连接帮助与本地 HTML</summary><p>浏览器限制网页直接打开扩展管理页，请复制地址后粘贴到地址栏。</p><p>如果扩展显示 OFF，请打开扩展弹窗，检查连接开关，并在「连接设置」将端口设为 <code>${this.port}</code>。</p><p>本地 HTML：在扩展详情中开启「允许访问文件网址」，再用 @ 选择已打开的文件标签页。</p><p>扩展只连接本机，不读取 Cookie；只有在对话中引用的页面才允许操作。</p></details>
+      <p id="approval-status" role="status">批准连接前，请从 DSH 的 /browser 菜单打开本页。</p>
       <footer><span>DSH DoYourWeb · 本机连接</span><a href="/setup">刷新状态</a></footer></main>`;
     const script = `
+      ${approvalScript("setup")}
+      approvalReady.then(key=>{for(const form of document.querySelectorAll('form')){form.elements.key.value=key;for(const button of form.querySelectorAll('button'))button.disabled=false}document.querySelector('#approval-status').textContent='DSH 已打开本次确认窗口，请核对扩展验证码'}).catch(error=>document.querySelector('#approval-status').textContent=error.message);
       for (const button of document.querySelectorAll(".copy")) button.addEventListener("click", async () => {
         const value = button.dataset.copy;
         try { await navigator.clipboard.writeText(value); } catch {
@@ -210,15 +238,15 @@ export class BrowserBridge extends EventEmitter {
   }
 
   handlePairPost(request, response) {
-    // Same-origin form post plus the per-start key: a page on another origin can
-    // neither read the key nor post here with this content type.
+    // Only a private setup session exchanged from a DSH-issued invitation may
+    // approve a pairing. Spoofed browser headers alone grant no authority.
     const sameOrigin = !request.headers["sec-fetch-site"] || request.headers["sec-fetch-site"] === "same-origin";
     if (!sameOrigin) { response.writeHead(403).end(); return; }
     let body = "";
     request.on("data", chunk => { body += chunk; if (body.length > 4096) request.destroy(); });
     request.on("end", () => {
       const fields = new URLSearchParams(body);
-      if (!sameSecret(fields.get("key"), this.setupKey)) { response.writeHead(403).end(); return; }
+      if (!this.approval.permits(fields.get("key"), "setup")) { response.writeHead(403).end(); return; }
       const id = fields.get("id") ?? "";
       if (fields.get("action") === "allow") this.approvePairing(id);
       else this.pairings.take(id)?.socket.close(1000, "Pairing denied");
@@ -258,6 +286,10 @@ export class BrowserBridge extends EventEmitter {
               ws, tabs: new Map(), browser: info.browser === "Edge" ? "Edge" : "Chrome" };
             this.profiles.set(profile.id, profile);
           }
+          profile.extensionVersion = /^[\d.]{1,24}$/.test(info.extensionVersion || "") ? info.extensionVersion : undefined;
+          profile.protocolRevision = Number.isSafeInteger(info.protocolRevision) ? info.protocolRevision : undefined;
+          profile.compatibilityWarning = profile.protocolRevision !== bridgeProtocolRevision ? "扩展的协议修订不同或扩展较旧，请同步更新。"
+            : profile.extensionVersion !== this.diagnostics.version ? "主机与扩展版本不同，请同步更新。" : "";
           profile.tabs = new Map(info.tabs.filter(tab => Number.isSafeInteger(tab.id) && !tab.incognito && canControl(tab.url))
             .map(tab => [tab.id, { ...tab, ref: tabRef(profile.id, tab.id), browser: profile.browser,
               favicon: typeof tab.favicon === "string" && tab.favicon.length <= 12000
@@ -266,9 +298,20 @@ export class BrowserBridge extends EventEmitter {
           for (const relay of [...this.relays.values()]) {
             if (relay.profile === profile && !profile.tabs.has(relay.tabId)) void this.dropRelay(relay);
           }
-        } else if (profile && data.method === "dsh.annotation.start") {
-          const selected = profile.tabs.get(data.params?.tabId);
-          if (selected) this.emit("annotation", selected.ref);
+        } else if (data.method === "dsh.annotation.start") {
+          const selected = profile && this.profiles.get(profile.id) === profile && profile.tabs.get(data.params?.tabId);
+          const reply = error => {
+            if (typeof data.id === "string" && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify(error ? { id: data.id, error } : { id: data.id, result: { ok: true } }));
+            }
+          };
+          if (!selected) reply("未找到当前网页，请切换到支持的标签页后再试。");
+          else if (!this.emit("annotation", selected.ref, reply)) reply("DSH 批注服务未就绪，请检查插件连接。");
+        } else if (data.method === "dsh.activity.stop" && typeof data.id === "string") {
+          const tabId = data.params?.tabId;
+          const reply = stopped => ws.send(JSON.stringify({ id: data.id, result: { stopped } }));
+          if (!profile || this.profiles.get(profile.id) !== profile || !Number.isSafeInteger(tabId) || tabId < 0
+            || !this.emit("activityStop", tabRef(profile.id, tabId), reply)) reply(false);
         } else if (data.method === "dsh.diagnostic" && profile) {
           const pending = this.pending.get(data.params?.id);
           if (pending?.ws === ws && ["extension_receive", "api_settle", "extension_response"].includes(data.params.phase)) {
@@ -292,7 +335,7 @@ export class BrowserBridge extends EventEmitter {
           for (const relay of [...this.relays.values()]) {
             if (relay.profile === profile && relay.tabId === data.params[0].tabId) this.dropRelay(relay);
           }
-        } else if (data.method === "dsh.ping") ws.send(JSON.stringify({ method: "dsh.pong" }));
+        } else if (data.method === "dsh.ping") ws.send(JSON.stringify({ method: "dsh.pong", params: { version: this.diagnostics.version, protocolRevision: bridgeProtocolRevision } }));
       } catch { ws.close(1003, "Invalid bridge message"); }
     });
     ws.on("close", () => {
@@ -439,6 +482,7 @@ export class BrowserBridge extends EventEmitter {
   }
 
   async close() {
+    this.approval.close();
     for (const relay of [...this.relays.values()]) this.dropRelay(relay);
     await Promise.all(this.detachments.values());
     for (const client of this.ws?.clients || []) client.close();

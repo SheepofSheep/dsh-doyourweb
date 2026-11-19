@@ -148,6 +148,7 @@ test("the setup page serves the pairing request and refuses forged posts", async
     const request = bridge.pairings.list()[0];
     assert.match(page, new RegExp(request.code));
     assert.match(page, /\/setup\/pair/);
+    assert.equal(page.includes('name="key" value=""'), true, "public setup never embeds an approval credential");
     // The folder path is a copy button, not a link: a browser refuses web-page
     // navigation to chrome://, so only the user can open the extension manager.
     assert.match(page, /<button type="button" class="copy" data-copy="[^"]+">/);
@@ -163,7 +164,7 @@ test("the setup page serves the pairing request and refuses forged posts", async
     // A cross-site post cannot approve anything, even with the right fields.
     const forged = await fetch(pairEndpoint, {
       method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "Sec-Fetch-Site": "cross-site" },
-      body: new URLSearchParams({ key: bridge.setupKey, id: request.id, action: "allow" }),
+      body: new URLSearchParams({ key: bridge.approval.exchange(bridge.approval.invite("setup"), "setup"), id: request.id, action: "allow" }),
     });
     assert.equal(forged.status, 403);
     assert.equal(bridge.pairings.list().length, 1);
@@ -175,10 +176,19 @@ test("the setup page serves the pairing request and refuses forged posts", async
     assert.equal(guessed.status, 403);
     assert.equal(bridge.pairings.list().length, 1);
     // The page's own form approves the request.
+    const invitationUrl = new URL(bridge.approvalUrl("setup"));
+    const secret = new URLSearchParams(invitationUrl.hash.slice(1)).get("approve");
+    const exchange = () => fetch(new URL("auth/session", bridge.url), { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope: "setup", secret }) });
+    const privateSession = await exchange();
+    assert.equal(privateSession.status, 200);
+    const { key } = await privateSession.json();
+    assert.equal((await exchange()).status, 403, "the invitation cannot be reused");
+    assert.equal(page.includes(key) || page.includes(secret), false);
     const approved = await fetch(pairEndpoint, {
       method: "POST", redirect: "manual",
       headers: { "Content-Type": "application/x-www-form-urlencoded", "Sec-Fetch-Site": "same-origin" },
-      body: new URLSearchParams({ key: bridge.setupKey, id: request.id, action: "allow" }),
+      body: new URLSearchParams({ key, id: request.id, action: "allow" }),
     });
     assert.equal(approved.status, 303);
     assert.equal(bridge.pairings.list().length, 0);
@@ -446,7 +456,7 @@ test("client uses native @ source and synchronous slash command contract", async
     ] } }) } } };
   applyClient(ctx, { browserIcon: () => null, tabIcon: () => () => null });
   const items = await sources[0].candidates({}, { query: "" });
-  assert.equal(items[0].section, "\u6807\u7b7e\u9875");
+  assert.equal(items[0].section, "网页");
   const picked = sources[0].onPick({ candidate: items[0] });
   assert.equal(picked.insert.source, "browser-tabs");
   assert.deepEqual(mentions(await sources[0].codec.serialize(picked.insert.ref)), ["dsh-browser://abc/1"]);

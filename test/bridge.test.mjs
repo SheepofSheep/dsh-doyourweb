@@ -19,9 +19,31 @@ async function inventory(bridge, browserSession, title = "Original") {
     tabs: [{ id: 7, title, url: "https://example.com", windowId: 1 }],
   } }));
   socket.send(JSON.stringify({ method: "dsh.ping" }));
-  assert.equal(JSON.parse((await published)[0]).method, "dsh.pong");
+  const pong = JSON.parse((await published)[0]);
+  assert.equal(pong.method, "dsh.pong");
+  assert.equal(pong.params.protocolRevision, 1);
+  assert.equal(pong.params.version, bridge.diagnostics.version);
   return { socket, ref: bridge.list()[0].ref };
 }
+
+test("host reports old extension revisions and version drift as hints only", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "dsh-compatibility-"));
+  const bridge = new BrowserBridge({ home, port: 0 });
+  bridge.diagnostics.version = "0.2.3";
+  try {
+    await bridge.start();
+    const { socket } = await inventory(bridge, "compatibility");
+    assert.match([...bridge.profiles.values()][0].compatibilityWarning, /协议修订不同或扩展较旧/);
+    for (const [extensionVersion, expected] of [["0.2.2", /版本不同/], ["0.2.3", /^$/]]) {
+      const response = once(socket, "message");
+      socket.send(JSON.stringify({ method: "dsh.inventory", params: { profile: "saved-profile", browserSession: "compatibility", browser: "Edge", extensionVersion, protocolRevision: 1, tabs: [] } }));
+      socket.send(JSON.stringify({ method: "dsh.ping" }));
+      await response;
+      assert.match([...bridge.profiles.values()][0].compatibilityWarning, expected);
+      assert.equal(socket.readyState, WebSocket.OPEN);
+    }
+  } finally { await bridge.close(); await rm(home, { recursive: true, force: true }); }
+});
 
 test("grants survive DSH restart but cannot follow reused IDs after browser restart", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dsh-lifetime-"));
@@ -117,7 +139,7 @@ test("unapproved pairing sockets close on expiry or denial without waiting for s
     const request = JSON.parse((await challenge)[0]);
     const response = await fetch(new URL("setup/pair", bridge.url), {
       method: "POST", redirect: "manual", body: new URLSearchParams({
-        key: bridge.setupKey, id: request.params.id, action: "deny",
+        key: bridge.approval.exchange(bridge.approval.invite("setup"), "setup"), id: request.params.id, action: "deny",
       }),
     });
     assert.equal(response.status, 303);

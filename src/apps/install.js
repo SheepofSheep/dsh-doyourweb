@@ -1,28 +1,55 @@
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import os from "node:os";
 import { runProcess } from "./runtime.js";
 import { findExecutable } from "./processes.js";
 
 export function managedDirectory(home, id) { return path.join(home, "connectors", createHash("sha256").update(id).digest("hex").slice(0, 24)); }
 
-async function fetchJson(url, signal) {
-  const response = await fetch(url, { signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]), headers: { "User-Agent": "dsh-doyourweb" } });
+async function fetchJson(url, signal, fetcher = fetch) {
+  const response = await fetcher(url, { signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]), headers: { "User-Agent": "dsh-doyourweb" } });
   if (!response.ok) throw new Error(`Package metadata HTTP ${response.status}`);
   const text = await response.text(); if (text.length > 3e6) throw new Error("Package metadata too large"); return JSON.parse(text);
 }
 
-export async function preparePackage(candidate, signal) {
+export function reviewedNpmLock(candidate) {
+  const reviewed = candidate.dependencyLock;
+  if (!reviewed || typeof reviewed.json !== "string" || createHash("sha256").update(reviewed.json).digest("hex") !== reviewed.sha256) throw new Error("Reviewed npm dependency lock is missing or changed; request a fresh approval");
+  const lock = JSON.parse(reviewed.json), name = candidate.package.name;
+  if (lock.lockfileVersion !== 3 || lock.packages?.[""]?.dependencies?.[name] !== candidate.package.version
+    || Object.keys(lock.packages[""].dependencies).length !== 1
+    || lock.packages?.[`node_modules/${name}`]?.version !== candidate.package.version
+    || lock.packages?.[`node_modules/${name}`]?.integrity !== candidate.integrity) throw new Error("Reviewed npm dependency lock differs from the selected package");
+  for (const [location, item] of Object.entries(lock.packages)) {
+    if (!location) continue;
+    if (item.link || !item.version || (!item.inBundle && (!/^sha(?:256|384|512)-/.test(item.integrity || "") || !/^https:\/\/registry\.npmjs\.org\//.test(item.resolved || "")))) throw new Error("npm dependency lock contains an unpinned or unsupported source; configure a reviewed local installation instead");
+  }
+  return lock;
+}
+
+export async function preparePackage(candidate, signal, { home = os.tmpdir(), run = runProcess, find = findExecutable, fetcher = fetch } = {}) {
   if (!candidate.package) return candidate;
   const pkg = candidate.package;
   if (pkg.type === "npm") {
-    const metadata = await fetchJson(`https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${encodeURIComponent(pkg.version)}`, signal);
+    const metadata = await fetchJson(`https://registry.npmjs.org/${encodeURIComponent(pkg.name)}/${encodeURIComponent(pkg.version)}`, signal, fetcher);
     if (metadata.name !== pkg.name || metadata.version !== pkg.version) throw new Error("Registry package identity changed");
     const bins = typeof metadata.bin === "string" ? { [pkg.name.split("/").at(-1)]: metadata.bin } : metadata.bin || {};
     const entry = pkg.entry || (Object.keys(bins).length === 1 ? Object.keys(bins)[0] : undefined);
     if (!entry || !Object.hasOwn(bins, entry) || !/^[\w.-]+$/.test(entry)) throw new Error("Package exposes no unambiguous executable; configure package.entry in the connector");
     if (!/^sha(?:256|384|512)-/.test(metadata.dist?.integrity || "")) throw new Error("Package has no supported integrity digest; review and configure a local installation instead");
-    return { ...candidate, package: { ...pkg, entry }, integrity: metadata.dist?.integrity, install: { type: "npm", package: `${pkg.name}@${pkg.version}`, scripts: false } };
+    const prepared = { ...candidate, package: { ...pkg, entry }, integrity: metadata.dist.integrity, install: { type: "npm", package: `${pkg.name}@${pkg.version}`, scripts: false } };
+    const npm = await find(process.platform === "win32" ? "npm.cmd" : "npm"); if (!npm) throw new Error("Install Node.js/npm first; dependency review requires npm");
+    const plans = path.join(home, "connector-plans"); await mkdir(plans, { recursive: true });
+    const directory = await mkdtemp(path.join(plans, "npm-"));
+    try {
+      await writeFile(path.join(directory, "package.json"), JSON.stringify({ name: "dsh-reviewed-connector", version: "1.0.0", private: true, dependencies: { [pkg.name]: pkg.version } }), { mode: 0o600 });
+      const result = await run(npm, ["install", "--package-lock-only", "--lockfile-version=3", "--ignore-scripts", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/"], { cwd: directory, env: { NPM_CONFIG_CACHE: path.join(home, "npm-cache") }, signal, timeout: 180000 });
+      if (result.exitCode !== 0) throw new Error(`npm dependency review failed: ${result.stderr}`);
+      const json = await readFile(path.join(directory, "package-lock.json"), "utf8");
+      prepared.dependencyLock = { json, sha256: createHash("sha256").update(json).digest("hex"), packages: Object.keys(JSON.parse(json).packages || {}).length - 1 };
+      reviewedNpmLock(prepared); return prepared;
+    } finally { await rm(directory, { recursive: true, force: true }); }
   }
   if (pkg.type === "pypi") return { ...candidate, install: { type: "pypi", package: `${pkg.name}==${pkg.version}` } };
   throw new Error("Package registry type is not supported; add an explicit installed command");
@@ -34,18 +61,21 @@ export function desktopCandidate() {
     install: { type: "cua-release", tag: "cua-driver-rs-v0.28.0" } };
 }
 
-export async function installConnector(candidate, home, signal) {
+export async function installConnector(candidate, home, signal, { run = runProcess, find = findExecutable } = {}) {
   const directory = managedDirectory(home, candidate.id);
   await mkdir(directory, { recursive: true });
   const install = candidate.install;
   if (install?.type === "npm") {
-    const npm = await findExecutable(process.platform === "win32" ? "npm.cmd" : "npm"); if (!npm) throw new Error("Install Node.js/npm first; no npm executable was found");
-    const result = await runProcess(npm, ["install", "--prefix", directory, "--ignore-scripts", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/", install.package], { env: { NPM_CONFIG_CACHE: path.join(directory, "cache") }, signal, timeout: 180000 });
+    const reviewed = reviewedNpmLock(candidate);
+    const npm = await find(process.platform === "win32" ? "npm.cmd" : "npm"); if (!npm) throw new Error("Install Node.js/npm first; no npm executable was found");
+    await writeFile(path.join(directory, "package.json"), JSON.stringify({ name: "dsh-reviewed-connector", version: "1.0.0", private: true, dependencies: reviewed.packages[""].dependencies }), { mode: 0o600 });
+    await writeFile(path.join(directory, "package-lock.json"), candidate.dependencyLock.json, { mode: 0o600 });
+    const result = await run(npm, ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/"], { cwd: directory, env: { NPM_CONFIG_CACHE: path.join(directory, "cache") }, signal, timeout: 180000 });
     if (result.exitCode !== 0) throw new Error(`npm install failed: ${result.stderr}`);
     const manifest = JSON.parse(await readFile(path.join(directory, "node_modules", ...candidate.package.name.split("/"), "package.json"), "utf8"));
     if (manifest.version !== candidate.package.version) throw new Error("Installed package version differs from reviewed version");
-    const lock = JSON.parse(await readFile(path.join(directory, "package-lock.json"), "utf8"));
-    if (lock.packages?.[`node_modules/${candidate.package.name}`]?.integrity !== candidate.integrity) throw new Error("Installed package integrity differs from the reviewed package; refusing to execute");
+    const installedLock = await readFile(path.join(directory, "package-lock.json"), "utf8");
+    if (installedLock !== candidate.dependencyLock.json) throw new Error("npm dependency lock changed during installation; refusing to execute");
     return { ...candidate, command: path.join(directory, "node_modules", ".bin", candidate.package.entry + (process.platform === "win32" ? ".cmd" : "")), installed: true };
   }
   if (install?.type === "pypi") {
