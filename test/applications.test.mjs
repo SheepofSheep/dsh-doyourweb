@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { AppInventory, appRefs, findExecutable } from "../src/apps/processes.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { Applications } from "../src/apps/service.js";
@@ -746,9 +747,9 @@ test("discovery preserves digits in application names", async () => {
 
 test("desktop deadline includes preparing the selected window", async t => {
   const { service, app, exec, calls } = await desktopFixture(t);
-  service.inventory.ensureWindow = async (_ref, signal) => new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-  });
+  // Keep pending work in the event loop while the unreferenced deadline runs.
+  service.inventory.ensureWindow = (_ref, signal) => delay(1000, undefined, { signal })
+    .finally(() => signal.throwIfAborted());
   const started = Date.now();
   await assert.rejects(service.desktop(app.ref, { timeout: 30 }, exec), /timeout/i);
   assert.ok(Date.now() - started < 500); assert.equal(calls.length, 0);
