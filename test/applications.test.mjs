@@ -763,12 +763,12 @@ test("timed-out CLI removes its own child tree and leaves unrelated processes ru
   await assert.rejects(runProcess(process.execPath, ["-e", source, marker], { timeout: 1200 }), UncertainOperation);
   const pid = Number(await readFile(marker, "utf8"));
   if (process.platform === "linux") {
-    // SIGKILL delivery is asynchronous, and a zombie can retain its PID until reaped.
+    // A zombie can retain its PID until reaped, and /proc can disappear between open and read.
     let state;
     const deadline = Date.now() + 1000;
     do {
       const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(error => {
-        if (error.code !== "ENOENT") throw error;
+        if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
         return "";
       });
       state = stat.charAt(stat.lastIndexOf(")") + 2);
