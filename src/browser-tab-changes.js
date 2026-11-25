@@ -10,7 +10,7 @@ export function browserTabChanges(service, lifetime) {
     let next;
     try {
       const result = await service().list({}, current.signal);
-      next = result.ok ? JSON.stringify([result.value.connected, result.value.tabs.map(tab =>
+      next = result.ok ? JSON.stringify([result.value.connected, result.value.windows, result.value.tabs.map(tab =>
         [tab.ref, tab.title, tab.url, tab.browser])]) : "unavailable";
     } catch { next = "unavailable"; }
     finally { busy = false; }

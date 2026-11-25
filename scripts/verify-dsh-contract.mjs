@@ -112,7 +112,8 @@ async function verifyRegistry(bundle) {
   const context = new Context();
   new TypertRegistry(context);
   const dispose = context.typert.register(hostContribution);
-  const payloads = { list: { query: "docs" }, setup: {}, focus: { ref: "dsh-browser://profile/1" }, apps: { query: "Unity" }, annotationSession: { client: "verify", revision: 1, sessionId: "verify", title: "Test", active: true }, manage: {}, diagnostics: {} };
+  const payloads = { list: { query: "docs" }, access: { sessionId: "verify" }, setAccess: { sessionId: "verify", enabled: true, profile: "verify", windowId: 1 },
+    setup: {}, focus: { ref: "dsh-browser://profile/1" }, apps: { query: "Unity" }, annotationSession: { client: "verify", revision: 1, sessionId: "verify", title: "Test", active: true }, manage: {}, diagnostics: {} };
   for (const descriptor of descriptors) {
     const registered = context.typert.local.get(`${descriptor.namespace}/${descriptor.method}`);
     assert.equal(registered?.id, descriptor.id, `${descriptor.method} must register`);
@@ -142,9 +143,12 @@ function fakeConnection(calls, reply) {
 async function verifyGateway(bundle) {
   const gateway = await loadClientBundle(bundle);
   const calls = [];
+  const window = { profile: "verify", windowId: 1, browser: "Chrome", profileLabel: "verify", tabCount: 0 };
   const connection = fakeConnection(calls, endpoint => ({
     ok: true,
     value: endpoint === "browserTabs/list" ? { tabs: [], connected: false }
+      : endpoint === "browserTabs/access" ? { enabled: false, windows: [window] }
+      : endpoint === "browserTabs/setAccess" ? { enabled: true, profile: window.profile, windowId: window.windowId, windows: [window] }
       : endpoint === "browserTabs/setup" ? { url: "http://127.0.0.1:43187/setup", extensionPath: "/extension" }
         : { ok: true },
   }));
@@ -158,6 +162,11 @@ async function verifyGateway(bundle) {
   assert.deepEqual(listed, { ok: true, value: { tabs: [], connected: false } });
   assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),
     { channel: "/api", endpoint: "browserTabs/list", args: { request: { query: "docs" } } });
+  const sessionId = "verify";
+  assert.deepEqual(await context.remote.browserTabs.access({ sessionId }), { ok: true, value: { enabled: false, windows: [window] } });
+  const request = { sessionId, enabled: true, profile: window.profile, windowId: window.windowId };
+  assert.deepEqual(await context.remote.browserTabs.setAccess(request), { ok: true, value: { enabled: true, profile: window.profile, windowId: window.windowId, windows: [window] } });
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), { channel: "/api", endpoint: "browserTabs/setAccess", args: { request } });
   // Negative control: the `src-json` markers this package used before 0.1.2 are refused.
   await assert.rejects(context.remote.$mount({ package: `${PACKAGE}-src`, descriptors: descriptors.map(descriptor => ({
     ...descriptor,
@@ -337,12 +346,14 @@ async function verifyNativeReferenceSource(bundle, searchBundle) {
   const native = await loadClientBundle(bundle, { react: {}, "react/jsx-runtime": {}, "@deepseek-ai/dsh-client-ui-primitives": {} });
   const sources = [], lookups = [];
   const service = { live: { sources }, registerSource(source) { sources.push(source); return () => {}; } };
-  const binding = { session: { getSnapshot: () => ({ openState: "open" }) } };
-  const sessions = { binding: () => binding, using: (_id, _options, callback) => callback({ binding }), list: { getSnapshot: () => ({ byId: {} }) } };
+  const binding = { session: { getSnapshot: () => ({ openState: "open" }),
+    projections: { faceOf: () => ({ getSnapshot: () => undefined }) } } };
+  const sessions = { binding: () => binding, using: (_id, _options, callback) => callback({ binding }),
+    list: { getSnapshot: () => ({ byId: {}, projectionsBySession: {} }) } };
   const items = Array.from({ length: 7 }, (_, i) => ({ kind: "file", path: `src/file-${i}.js` }))
     .concat(Array.from({ length: 7 }, (_, i) => ({ kind: "directory", path: `dir-${i}` })));
   const context = {
-    effect: factory => factory(), locale: { register() {}, bind: () => key => key },
+    effect: factory => factory(), inject() {}, locale: { register() {}, bind: () => key => key }, sessions,
     uiConversation: { userText: { register() {} } }, slots: { inject() {} },
     get: name => name === "sessions" ? sessions : name === "inputTriggers" ? service : undefined,
     remote: { $host: { home: "/home/test" },
@@ -355,34 +366,36 @@ async function verifyNativeReferenceSource(bundle, searchBundle) {
   for (const query of ["文件", "文件:", "files", "文件："]) {
     const files = await source.candidates(session, request(query));
     assert.equal(files.length, 8); assert.equal(lookups.at(-1), "");
-    assert.equal(source.onPick({ candidate: files[1], action: "pick" }).insert.ref, "@src/file-0.js");
+    assert.equal(source.onPick({ candidate: files[1], session, action: "pick" }).insert.ref, "@src/file-0.js");
   }
   const folders = await source.candidates(session, request("文件夹"));
   assert.equal(folders.length, 8);
-  assert.deepEqual(source.onPick({ candidate: folders[1], action: "drill" }), { text: "@dir-0/", continue: true });
+  assert.deepEqual(source.onPick({ candidate: folders[1], session, action: "drill" }), { text: "@dir-0/", continue: true });
   const rootItems = await source.candidates(session, request(""));
   assert.equal(rootItems.filter(item => JSON.parse(item.value).fileKind === "file").length, 3);
   assert.equal(rootItems.find(item => JSON.parse(item.value).fileKind === "file").section, "文件");
   restore();
   console.log("PASS: the installed native file source lists actual file/folder candidate shapes, accepts @file aliases, and preserves native file insertion/folder navigation.");
 
-  // Only the provider's registration/schema dependencies are stubbed. Its
-  // actual exported WorkspaceFileSearch runs unchanged against a real tree.
+  // Expose the provider's search class in the test copy. Its implementation
+  // runs unchanged against a real tree.
   const chain = { step() { return this; }, min() { return this; }, default() { return this; } };
   const schema = { object: value => value, number: () => chain, string: () => chain, array: () => chain };
   const stubs = { "@deepseek-ai/schemastery": { __esModule: true, default: schema },
     "@deepseek-ai/dsh-file-reference": { __esModule: true, default: class {}, FILE_REFERENCE_PROMPT: "" },
     "@deepseek-ai/dsh-file-reference/grammar": {} };
   const require = createRequire(import.meta.url), module = { exports: {} };
-  const compiled = await transform(await readFile(searchBundle, "utf8"), { format: "cjs", platform: "node" });
+  const searchSource = await readFile(searchBundle, "utf8");
+  const compiled = await transform(`${searchSource}\nexport { WorkspaceFileSearch as Search, DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES as exclusions };`,
+    { format: "cjs", platform: "node" });
   new Function("require", "module", "exports", compiled.code)(id => stubs[id] ?? require(id), module, module.exports);
-  const { WorkspaceFileSearch, DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES } = module.exports;
+  const { Search, exclusions } = module.exports;
   const fixtureRoot = path.join(output, "file-limit-workspace");
   await mkdir(fixtureRoot, { recursive: true });
   for (let i = 0; i < 25; i++) await mkdir(path.join(fixtureRoot, `dir-${i}`), { recursive: true });
   for (const name of ["README.md", "LICENSE"]) await writeFile(path.join(fixtureRoot, name), "fixture");
-  const config = { maxResults: 20, maxEntries: 50000, excludedDirectories: DEFAULT_FILE_SEARCH_EXCLUDED_DIRECTORIES };
-  const search = new WorkspaceFileSearch(fixtureRoot, config);
+  const config = { maxResults: 20, maxEntries: 50000, excludedDirectories: exclusions };
+  const search = new Search(fixtureRoot, config);
   try {
     const limited = await search.list("", new AbortController().signal);
     assert.equal(limited.length, 20); assert.equal(limited.every(item => item.kind === "directory"), true, "reproduce native file starvation before the fix");
@@ -396,7 +409,7 @@ async function verifyNativeReferenceSource(bundle, searchBundle) {
       assert.deepEqual(bare.filter(item => JSON.parse(item.value).fileKind === "file").map(item => item.name), ["LICENSE", "README.md"]);
       assert.equal((await host.list(agent, "", new AbortController().signal)).length, 20, "total native result budget stays bounded");
       const files = await source.candidates(session, request("文件"));
-      assert.equal(source.onPick({ candidate: files[1], action: "pick" }).insert.source, "reference");
+      assert.equal(source.onPick({ candidate: files[1], session, action: "pick" }).insert.source, "reference");
     } finally { restoreClient(); restoreHost(); }
   } finally { search.dispose(); }
   console.log("PASS: the installed native filesystem provider reproduces the 20-directory starvation; the host/client fix restores files in bare @ while retaining native insertion and the result budget.");

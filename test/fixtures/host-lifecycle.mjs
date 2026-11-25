@@ -30,7 +30,95 @@ try {
   await closePort(probe);
   const plugin = { name: "browser-tabs-test", inject: ["tools", "typert"],
     apply: ctx => apply(ctx, { home: process.argv[2], port, ...(process.argv[3] === "small-budget" ? { snapshotChars: 400 } : {}) }) };
-  if (process.argv[3] === "original-input") {
+  if (process.argv[3] === "session-access") {
+    let bridge, answer, readSignal, navigationRevision = 1;
+    const start = BrowserBridge.prototype.start;
+    BrowserBridge.prototype.start = async function () { bridge = this; return start.call(this); };
+    WebMCP.prototype.list = async () => ({ supported: false, tools: [] });
+    BrowserEngine.prototype.read = async (ref, options, signal) => {
+      readSignal = signal;
+      options.pageAccess?.assertUrl("https://example.org/");
+      return { tab: ref, scoped: !!options.pageAccess };
+    };
+    root.provide("userQuestions", { ask: request => answer(request) });
+    const fiber = root.plugin(plugin); await fiber.await();
+    const browser = root.get("browserTabs");
+    const agent = { session: { id: "scoped-session" } }, other = { session: { id: "other-session" } };
+    const ref = id => `dsh-browser://runtime/${id}`;
+    const existing = { id: 1, ref: ref(1), windowId: 7, url: "https://example.org/notes", title: "Notes", revision: 1 };
+    const similar = { ...existing, id: 2, ref: ref(2), url: "https://example.org/other-notes" };
+    const outside = { ...existing, id: 3, ref: ref(3), windowId: 8, url: "https://sensitive.example.org/notes" };
+    const opened = { id: 4, ref: ref(4), windowId: 7, url: "https://example.org/start", title: "New page" };
+    const profile = { id: "runtime", sourceId: "profile-source", browser: "Edge", windows: new Set([7, 8]),
+      tabs: new Map([existing, similar, outside].map(tab => [tab.id, tab])) };
+    bridge.profiles.set(profile.id, profile);
+    let openedCount = 0;
+    bridge.request = async (_profile, method, args) => {
+      assert.equal(_profile, profile);
+      if (method === "dsh.openTab") {
+        assert.deepEqual(args, [7, opened.url]);
+        openedCount++;
+        profile.tabs.set(opened.id, opened);
+        return { tabId: opened.id };
+      }
+      assert.equal(method, "dsh.tabState");
+      assert.deepEqual(args, [1]);
+      return { ...existing, revision: navigationRevision };
+    };
+    const read = tools.get("browser_read"), open = tools.get("browser_open"), find = tools.get("browser_find");
+    const inspect = (tab, actor = agent) => read.execute({ tab, mode: "dom" }, { agent: actor });
+    const setting = { sessionId: agent.session.id, profile: profile.id, windowId: 7 };
+    assert.equal((await browser.access(setting)).enabled, false);
+    await assert.rejects(open.execute({ url: opened.url }, { agent }), /enable browser access/);
+    await assert.rejects(find.execute({ query: "Notes" }, { agent }), /enable browser access/);
+    await assert.rejects(browser.setAccess({ ...setting, enabled: true, windowId: 99 }), /window is unavailable/);
+    assert.equal((await browser.setAccess({ ...setting, enabled: true })).enabled, true);
+    await assert.rejects(open.execute({ url: opened.url }, { agent: other }), /enable browser access/);
+    for (const url of ["chrome://settings/", "file:///private.html", "https://name:pass@example.org/", `http://localhost:${port}/setup`]) {
+      await assert.rejects(open.execute({ url }, { agent }), /regular HTTP\/HTTPS URL/);
+    }
+    assert.equal(openedCount, 0);
+    assert.deepEqual(await open.execute({ url: opened.url }, { agent }), { status: "authorized", tab: opened.ref, title: opened.title, url: opened.url });
+    assert.deepEqual(await inspect(opened.ref), { tab: opened.ref, scoped: true });
+    await assert.rejects(inspect(opened.ref, other), /No browser tab is authorized/);
+    await assert.rejects(inspect(existing.ref), /not referenced by the user/);
+    answer = async ({ questions: [question] }) => {
+      assert.deepEqual(question.options.map(option => option.description).filter(Boolean), [existing.url, similar.url]);
+      assert.notEqual(question.options[0].label, question.options[1].label, "same-title tabs must be distinguishable");
+      return { answers: [{ id: question.id, selected: [], custom: question.options[0].label }] };
+    };
+    assert.deepEqual(await find.execute({ query: "notes" }, { agent }), { status: "denied" });
+    await assert.rejects(inspect(existing.ref), /not referenced by the user/);
+    answer = async ({ questions: [question] }) => ({ answers: [{ id: question.id, selected: [question.options[0].label] }] });
+    navigationRevision = 2;
+    assert.equal((await find.execute({ query: "notes" }, { agent })).status, "changed");
+    navigationRevision = 1;
+    assert.deepEqual(await find.execute({ query: "notes" }, { agent }), { status: "authorized", tab: existing.ref, title: existing.title, url: existing.url });
+    assert.deepEqual(await inspect(existing.ref), { tab: existing.ref, scoped: true });
+    await assert.rejects(inspect(similar.ref), /not referenced by the user/);
+    await assert.rejects(inspect(outside.ref), /not referenced by the user/);
+
+    const manual = { id: "manual-open-tab", source: { kind: "user" }, content: [{ type: "text", text: opened.ref }] };
+    await root.waterfall("agent/pre-step", { agent, messages: [manual] }, () => Promise.resolve({ kind: "enter", messages: [manual] }));
+    await inspect(existing.ref);
+    const scopedSignal = readSignal;
+    let choose, prompted;
+    const dialog = new Promise(resolve => { prompted = resolve; });
+    answer = async ({ questions: [question] }) => new Promise(resolve => {
+      choose = () => resolve({ answers: [{ id: question.id, selected: [question.options[0].label] }] });
+      prompted();
+    });
+    const confirmation = find.execute({ query: "notes" }, { agent });
+    await dialog;
+    assert.equal((await browser.setAccess({ ...setting, enabled: false })).enabled, false);
+    choose();
+    await assert.rejects(confirmation, /access for this conversation changed/);
+    assert.equal(scopedSignal.aborted, true);
+    await assert.rejects(inspect(existing.ref), /not referenced by the user/);
+    assert.deepEqual(await inspect(opened.ref), { tab: opened.ref, scoped: false }, "manual grants survive revocation");
+    await fiber.dispose();
+    console.log("PASS: session browser tools scope new tabs and native tab selections and preserve manual references.");
+  } else if (process.argv[3] === "original-input") {
     BrowserEngine.prototype.upload = async (_ref, args) => ({ uploaded: args.files });
     const fiber = root.plugin(plugin); await fiber.await();
     const agent = { session: { id: "original-input" } };

@@ -191,8 +191,10 @@ test("a failing extension message handler keeps the browser session alive", asyn
     const { socket, ref } = await inventory(bridge, "handler-session");
     assert.equal(bridge.list().length, 1);
     // Malformed JSON is still a protocol violation and closes the socket.
+    const closed = once(socket, "close");
+    const inventoryDropped = once(bridge, "inventoryChanged");
     socket.send("not json");
-    const [code] = await once(socket, "close");
+    const [[code]] = await Promise.all([closed, inventoryDropped]);
     assert.equal(code, 1003);
     assert.equal(bridge.list().length, 0, "a protocol violation does drop the inventory");
     assert.ok(ref);

@@ -5,6 +5,7 @@ import { BrowserEngine } from "../src/engine.js";
 import { BrowserBridge } from "../src/bridge.js";
 import { serialize } from "../src/output.js";
 import { fileURLToPath } from "node:url";
+import { sessionWebUrl } from "../extension/protocol.js";
 
 test("navigate validates the whole batch before dispatch and uses value for valid URLs", async () => {
   let clicks = 0, url = "https://example.com", epoch = 1;
@@ -26,6 +27,27 @@ test("navigate validates the whole batch before dispatch and uses value for vali
   const result = await engine.act("tab", { snapshot: read.snapshot, observe: "summary", steps: [{ op: "navigate", value: "https://example.org" }] });
   assert.equal(result.completed.length, 1);
   assert.equal(url, "https://example.org");
+});
+
+test("mode navigation rejects protected destinations and never returns snapshots after a protected redirect", async () => {
+  const management = "http://127.0.0.1:43187/manage";
+  let url = "https://example.com", epoch = 1, clicks = 0;
+  const page = { evaluate: async () => ({ url, epoch }), title: async () => "Navigate", url: () => url,
+    locator: () => ({ ariaSnapshot: async () => url === management ? "Management data" : "- button [ref=e1]",
+      click: async () => { clicks++; url = management; epoch++; } }) };
+  const engine = new BrowserEngine({ page: async () => page });
+  const pageAccess = { assertUrl(value) { if (!sessionWebUrl(value, 43187)) throw new Error("Protected destination"); } };
+  const read = await engine.read("tab", { pageAccess });
+  await assert.rejects(engine.act("tab", { snapshot: read.snapshot, pageAccess,
+    steps: [{ op: "click", ref: "e1" }, { op: "navigate", value: management }] }), /Protected destination/);
+  assert.equal(clicks, 0, "a protected explicit navigation fails before preceding effects");
+  const redirected = await engine.act("tab", { snapshot: read.snapshot, pageAccess, steps: [{ op: "click", ref: "e1" }] });
+  assert.equal(redirected.completed.length, 1, "the receipt keeps the click which led to the redirect");
+  assert.match(redirected.failure.error, /Protected destination/);
+  assert.equal(redirected.url, undefined);
+  assert.doesNotMatch(JSON.stringify(redirected), /Management data/);
+  await assert.rejects(engine.read("tab", { pageAccess }), /Protected destination/);
+  assert.match((await engine.read("tab")).content, /Management data/, "manual references keep their existing behavior");
 });
 
 test("new same-tab reads replace snapshots; cursor pages and other tabs preserve them", async () => {

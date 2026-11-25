@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.2.5` fixes the browser sidebar blank-panel regression, strengthens pairing and bridge error handling, and corrects several annotation, capture, app installation and authorization edge cases. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
+Version `0.2.6` fixes packaged plugin startup and screenshots for nested Shadow DOM annotations. It also adds optional browser access for the current conversation. See [browser workflow and diagnostics](docs/browser-workflow.md#english) and [app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,7 +25,7 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.2.5** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.2.6** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
@@ -117,7 +117,7 @@ flowchart LR
     Apps --> Desktop["Cua Driver desktop fallback"]
 ```
 
-Only tabs referenced by the user in the current conversation are available to the model's browser tools. Page content is treated as untrusted data, not instructions or permission.
+The current conversation can use tabs you reference. If you enable browser access for that conversation, the agent can also open new tabs and request access to existing tabs in your selected window. Page content cannot grant access.
 
 <a id="quick-start"></a>
 
@@ -142,7 +142,7 @@ This requires a published package. If the registry returns `404`, use the local 
 ### Build and Install Locally
 
 ```sh
-git clone --branch ver0.2.5 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.6 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -186,6 +186,8 @@ The data directory is `<DSH_HOME>/browser-tabs/`, or `~/.dsh/browser-tabs/` when
 ### Usage
 
 The left navigation's **浏览器** button opens the native right panel with pages, apps and diagnostics. Clicking an item inserts a reference into the current draft; it does not send it. The `@` menu remains available. Page/app context, annotations and explicitly referenced logs display as compact expandable chips while preserving their full model payload. Diagnostics stay in local memory (600 metadata entries), can be paused, cleared or exported, and only enter a draft when you choose to reference them. The annotation toolbar can collapse its editor or park at the page edge; parking stops picking and keeps the unfinished note and position for restoration.
+
+In **浏览器 → 网页**, enable browser access for the current conversation and choose a paired Chrome or Edge window. The setting is off by default. Once enabled, the agent can open ordinary HTTP(S) pages in that window or search its existing tabs by keyword. To use an existing tab, choose it in DSH's confirmation card. These tabs use the browser's existing sign-in state. Turning off the setting revokes access granted through this feature, and manual `@` references still work. Update or reload the companion extension to use this feature with an existing pairing.
 
 After referencing a page, you can ask:
 

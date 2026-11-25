@@ -11,6 +11,7 @@ export const browserStyles = `
 .dyw-panel button,.dyw-panel input{font:inherit;color:inherit;border:1px solid var(--dyw-line);border-radius:var(--dyw-control-radius);background:transparent;padding:5px 8px;min-height:32px}.dyw-panel button{cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px}.dyw-panel button:hover{background:var(--dyw-hover)}.dyw-panel button:disabled{cursor:default;opacity:.5}.dyw-panel :is(button,input,summary):focus-visible,.dyw-context summary:focus-visible{outline:2px solid var(--dyw-focus);outline-offset:1px}.dyw-panel .dyw-icon-button{width:32px;padding:0;border-color:transparent}.dyw-panel .dyw-settings{font-size:12px}
 .dyw-tabs{margin-bottom:8px;border-bottom:1px solid var(--dyw-line);gap:16px}.dyw-panel .dyw-tabs button{border:0;border-radius:0;position:relative;padding:0 0 4px;color:var(--dyw-muted);min-height:32px;background:none}.dyw-panel .dyw-tabs button[aria-selected=true]{color:var(--dyw-ink);font-weight:600}.dyw-tabs button[aria-selected=true]:after{content:"";position:absolute;bottom:-1px;height:2px;background:currentColor;left:0;right:0}
 .dyw-search{position:relative;display:flex;align-items:center;margin-bottom:8px}.dyw-search>svg{position:absolute;left:10px;color:var(--dyw-muted);pointer-events:none}.dyw-panel input[type=search]{width:100%;padding-left:32px;min-height:34px;background:var(--dyw-hover);border-color:transparent;caret-color:var(--dyw-ink)}.dyw-panel input::placeholder{color:var(--dyw-muted);opacity:1}.dyw-panel input[type=checkbox]{min-height:0;accent-color:var(--dyw-ink)}
+.dyw-access{padding:8px 0 12px}.dyw-panel .dyw-access-window{display:grid;gap:3px;margin-bottom:8px}.dyw-access select{width:100%;min-width:0;min-height:32px;border:1px solid var(--dyw-line);border-radius:var(--dyw-control-radius);background:var(--dyw-ground);padding:4px 6px;color:inherit;font:inherit;text-overflow:ellipsis}.dyw-access select:focus-visible{outline:2px solid var(--dyw-focus);outline-offset:1px}.dyw-access p{margin:4px 0 0}
 .dyw-muted{color:var(--dyw-muted);font-size:12px}.dyw-status{margin:0 0 8px;overflow-wrap:anywhere}.dyw-status:empty{display:block;margin:0}.dyw-count{margin:0 0 4px}.dyw-list{list-style:none;padding:0;margin:0}.dyw-list li+li{border-top:1px solid var(--dyw-line)}.dyw-panel .dyw-object{display:flex;align-items:center;gap:8px;width:100%;min-height:48px;text-align:left;border:0;padding:4px 6px;justify-content:flex-start}.dyw-object>span{min-width:0;flex:1;display:block}.dyw-object strong,.dyw-object small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dyw-object strong{font-weight:500}.dyw-object img,.dyw-object svg{flex:none}.dyw-object small,.dyw-object .dyw-add{color:var(--dyw-muted);font-size:12px}.dyw-panel [aria-busy=true] .dyw-object{cursor:progress}
 .dyw-actions{flex-wrap:wrap;margin:8px 0}.dyw-empty{margin-top:8px;padding:12px;background:var(--dyw-hover);border-radius:var(--dyw-card-radius)}.dyw-empty strong{display:block;font-weight:500}.dyw-empty p{font-size:12px;color:var(--dyw-muted);margin:4px 0 0}.dyw-empty button{margin-top:8px}.dyw-panel pre,.dyw-context pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 var(--ds-font-family-code,ui-monospace),monospace;max-height:320px;overflow:auto;margin:8px 0 0;scrollbar-width:thin}
 .dyw-context{display:inline;white-space:normal;max-width:100%}.dyw-context>summary{display:inline-flex;align-items:center;gap:8px;vertical-align:middle;max-width:100%;cursor:pointer;list-style:none;border:1px solid var(--dyw-line);border-radius:var(--dyw-card-radius);padding:4px 8px;margin:2px 4px 2px 0;min-height:32px;background:var(--dyw-ground)}.dyw-context>summary:hover,.dyw-context[open]>summary{background:var(--dyw-hover)}.dyw-context>summary::-webkit-details-marker{display:none}.dyw-context[open]{display:block}.dyw-context>summary span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.dyw-context>summary svg{flex:none}.dyw-context .dyw-chevron{transition:transform .12s ease-out}.dyw-context[open] .dyw-chevron{transform:rotate(90deg)}
@@ -47,6 +48,52 @@ function ContextContent({ text }) {
     h(code ? "pre" : "p", null, body),
     details && h("details", null, h("summary", null, "元素详情"), h("pre", null, details)),
     body !== text && h("details", null, h("summary", null, `原始引用 · ${text.length.toLocaleString()} 字符`), h("pre", null, text)));
+}
+
+function BrowserAccess({ service, sessionId, refresh, onChange }) {
+  const [access, setAccess] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (saving) return;
+    const controller = new AbortController();
+    const load = async () => {
+      const result = await service().access({ sessionId }, controller.signal);
+      if (controller.signal.aborted) return;
+      if (!result.ok) throw new Error();
+      setAccess(result.value);
+    };
+    load().catch(() => { if (!controller.signal.aborted) setAccess(null); });
+    return () => controller.abort();
+  }, [service, sessionId, refresh, saving]);
+
+  const key = window => `${window.profile}/${window.windowId}`;
+  const windows = access?.windows ?? [];
+  const selected = access?.profile === undefined ? "" : key(access);
+  const update = async (enabled, window) => {
+    setSaving(true); setError("");
+    try {
+      const result = await service().setAccess({ sessionId, enabled, ...(window && { profile: window.profile, windowId: window.windowId }) });
+      if (!result.ok) throw new Error();
+      setAccess(result.value);
+      onChange();
+    } catch { setError("会话浏览器设置未保存，请刷新后重试。"); }
+    finally { setSaving(false); }
+  };
+
+  return h("div", { className: "dyw-access" },
+    h("label", { className: "dyw-access-window" }, h("span", { className: "dyw-muted" }, "目标浏览器窗口"),
+      h("select", { value: selected, disabled: saving || !windows.length, onChange: event => {
+        const window = windows.find(item => key(item) === event.target.value);
+        void update(Boolean(access.enabled && window), window);
+      } },
+        h("option", { value: "" }, access ? windows.length ? "请选择窗口" : "没有已连接的窗口" : "暂时无法选择窗口"),
+        ...windows.map(window => h("option", { key: key(window), value: key(window) },
+          `${window.browser} · ${window.profileLabel} · ${window.activeTitle || `${window.tabCount} 个可用网页`} · 窗口 ${window.windowId}`)))),
+    h("label", null, h("input", { type: "checkbox", checked: access?.enabled ?? false, disabled: saving || !selected,
+      onChange: event => void update(event.target.checked, access) }), "允许 Agent 无需 @ 使用浏览器"),
+    h("p", { className: "dyw-muted" }, "仅限当前会话和选定窗口。Agent 可新建网页，使用已有网页前会请你选定。"),
+    error && h("p", { role: "status", className: "dyw-muted" }, error));
 }
 
 export function BrowserPanel({ service, conversation, sessionId, watchTabs }) {
@@ -119,10 +166,11 @@ export function BrowserPanel({ service, conversation, sessionId, watchTabs }) {
           const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
           if (next < 0) return; event.preventDefault(); changeView(tabs[next][0]); event.currentTarget.parentElement.children[next].focus();
         }, onClick: () => changeView(key) }, text))),
+    view === "tabs" && sessionId && h(BrowserAccess, { key: sessionId, service, sessionId, refresh, onChange: () => setRefresh(value => value + 1) }),
     view !== "logs" && h("div", { className: "dyw-search" }, h(BrowserGlyph, { kind: "search", size: 15 }),
       h("input", { type: "search", placeholder: view === "tabs" ? "搜索网页标题或地址" : "搜索应用或窗口", "aria-label": "搜索", value: query, onChange: event => setQuery(event.target.value) })),
     h("p", { role: "status", className: "dyw-muted dyw-status" }, busy ? "正在载入…" : notice || (!sessionId && view !== "logs" ? "打开聊天会话后可加入草稿。" : "")),
-    view === "tabs" && h("p", { className: "dyw-muted" }, "授权标签仅对应当前会话，发送引用后可点刷新更新。加入草稿不会新增授权；发送含 @ 引用的消息会授权当前会话使用该页。"),
+    view === "tabs" && h("p", { className: "dyw-muted" }, "点击网页可加入草稿。发送含 @ 引用的消息后，该页会授权给当前会话。点击刷新可更新授权状态。"),
     h("div", { id: `${id}-content`, role: "tabpanel", "aria-labelledby": `${id}-${view}`, "aria-busy": busy },
     view === "logs" ? logs && h("div", null,
       h("div", { className: "dyw-log-header" },

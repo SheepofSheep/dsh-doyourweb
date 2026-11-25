@@ -107,35 +107,14 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
   let selecting = false, selected = window.__dshAnnotationDraft?.selected, selectionEpoch = 0, dockSide = "right", sessionId, sessionTitle = title;
   const escape = value => CSS.escape(value);
   const selectedTargets = window.__dshAnnotationDraft?.targets || new Map();
-  function selectorFor(element) {
+  function localSelectorFor(element) {
     const scope = element.getRootNode();
-    // A shadow-root selector is only meaningful inside its own root. Playwright
-    // resolves a selector from the document, so a root-relative chain such as
-    // `div > button` silently matches light DOM instead — the model would then act
-    // on a different element than the user picked. Report the host element instead.
-    if (scope instanceof ShadowRoot) {
-      const host = scope.host;
-      if (host?.nodeType === 1) return { shadow: true, host: selectorFor(host), local: shadowChain(element, scope) };
-      return { shadow: true, host: undefined, local: shadowChain(element, scope) };
-    }
     if (element.id && scope.querySelectorAll(`#${escape(element.id)}`).length === 1) return `#${escape(element.id)}`;
     const parts = [];
     for (let current = element; current?.nodeType === 1; current = current.parentElement) {
       let part = current.localName;
       if (current.id && scope.querySelectorAll(`#${escape(current.id)}`).length === 1) { parts.unshift(`#${escape(current.id)}`); break; }
-      const siblings = current.parentElement ? [...current.parentElement.children].filter(item => item.localName === current.localName) : [];
-      if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
-      parts.unshift(part);
-    }
-    return parts.join(" > ");
-  }
-  /** A chain that is unique within its own root, used only for display and for shadow picks. */
-  function shadowChain(element, scope) {
-    const parts = [];
-    for (let current = element; current?.nodeType === 1; current = current.parentElement) {
-      let part = current.localName;
-      if (current.id && scope.querySelectorAll(`#${escape(current.id)}`).length === 1) { parts.unshift(`#${escape(current.id)}`); break; }
-      const siblings = current.parentElement ? [...current.parentElement.children].filter(item => item.localName === current.localName) : [];
+      const siblings = [...(current.parentElement || scope).children].filter(item => item.localName === current.localName);
       if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(current) + 1})`;
       parts.unshift(part);
     }
@@ -155,12 +134,15 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
     const requestHex = [...requestBytes].map(value => value.toString(16).padStart(2, "0")).join("");
     const requestId = `${requestHex.slice(0, 8)}-${requestHex.slice(8, 12)}-${requestHex.slice(12, 16)}-${requestHex.slice(16, 20)}-${requestHex.slice(20)}`;
     selectedTargets.set(requestId, element);
-    const located = selectorFor(element);
+    const localSelector = localSelectorFor(element);
+    const roots = [localSelector];
+    // Scope each shadow selector to its host. Keep the root-local selector for
+    // validating the screenshot target in the browser.
+    for (let root = element.getRootNode(); root instanceof ShadowRoot; root = root.host.getRootNode()) {
+      roots.unshift(localSelectorFor(root.host));
+    }
     return { requestId, url: location.href, title: document.title,
-      // A shadow pick reports its host so the model targets a document-level element;
-      // the root-relative chain is kept for display only and never sent as `selector`.
-      selector: typeof located === "string" ? located : located.host || `shadow:${located.local}`,
-      shadowLocal: typeof located === "string" ? undefined : located.local,
+      selector: roots.join(" >> "), localSelector,
       tag: element.localName, role: element.getAttribute("role"), ariaLabel: element.getAttribute("aria-label"),
       text: (element.matches("input,textarea,[contenteditable]") ? "" : element.innerText || element.textContent || "").slice(0, 600),
       rect: { x: Math.max(0, box.left), y: Math.max(0, box.top), width: Math.max(0, Math.min(box.right, innerWidth) - Math.max(0, box.left)), height: Math.max(0, Math.min(box.bottom, innerHeight) - Math.max(0, box.top)), scrollX, scrollY },
@@ -300,7 +282,7 @@ export function installAnnotator({ binding, title = "DSH DoYourWeb", active = fa
       if (value.url !== location.href) throw new Error("页面地址已变化，请返回原地址或重新选择元素后再加入批注。");
       if (value.screenshot) {
         const element = selectedTargets.get(value.requestId);
-        if (!element?.isConnected || element.getRootNode().querySelector(value.selector) !== element) throw new Error("元素已变化，请重新选择后附截图。");
+        if (!element?.isConnected || element.getRootNode().querySelector(value.localSelector || value.selector) !== element) throw new Error("元素已变化，请重新选择后附截图。");
         const box = element.getBoundingClientRect();
         value.rect = { x: Math.max(0, box.left), y: Math.max(0, box.top), width: Math.max(0, Math.min(box.right, innerWidth) - Math.max(0, box.left)), height: Math.max(0, Math.min(box.bottom, innerHeight) - Math.max(0, box.top)), scrollX, scrollY };
       }

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import { AppInventory, appRefs, findExecutable } from "../src/apps/processes.js";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { Applications } from "../src/apps/service.js";
@@ -746,9 +747,9 @@ test("discovery preserves digits in application names", async () => {
 
 test("desktop deadline includes preparing the selected window", async t => {
   const { service, app, exec, calls } = await desktopFixture(t);
-  service.inventory.ensureWindow = async (_ref, signal) => new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-  });
+  // Keep pending work in the event loop while the unreferenced deadline runs.
+  service.inventory.ensureWindow = (_ref, signal) => delay(1000, undefined, { signal })
+    .finally(() => signal.throwIfAborted());
   const started = Date.now();
   await assert.rejects(service.desktop(app.ref, { timeout: 30 }, exec), /timeout/i);
   assert.ok(Date.now() - started < 500); assert.equal(calls.length, 0);
@@ -761,7 +762,23 @@ test("timed-out CLI removes its own child tree and leaves unrelated processes ru
   const source = "const{spawn}=require('node:child_process');spawn(process.execPath,['-e',\"require('node:fs').writeFileSync(process.argv[1],String(process.pid));setInterval(()=>{},1000)\",process.argv[1]],{stdio:'ignore'});setInterval(()=>{},1000)";
   await assert.rejects(runProcess(process.execPath, ["-e", source, marker], { timeout: 1200 }), UncertainOperation);
   const pid = Number(await readFile(marker, "utf8"));
-  assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  if (process.platform === "linux") {
+    // A zombie can retain its PID until reaped, and /proc can disappear between open and read.
+    let state;
+    const deadline = Date.now() + 1000;
+    do {
+      const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(error => {
+        if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+        return "";
+      });
+      state = stat.charAt(stat.lastIndexOf(")") + 2);
+      if (!state || state === "Z") break;
+      await delay(20);
+    } while (Date.now() < deadline);
+    assert.ok(!state || state === "Z", `CLI descendant still running with state ${state}`);
+  } else {
+    assert.throws(() => process.kill(pid, 0), /ESRCH/);
+  }
   assert.equal(process.kill(unrelated.pid, 0), true);
 });
 

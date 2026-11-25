@@ -181,12 +181,16 @@ export class Annotations {
       })(), new Promise(resolve => { timer = setTimeout(resolve, 750); })]);
     } catch { /* A closed document has no toolbar to remove. */ } finally { clearTimeout(timer); await entry.cdp.detach().catch(() => {}); }
   }
-  async start(ref, target, resume = false) {
+  async start(ref, target, resume = false, pageAccess, signal) {
     if (this.closed) throw new Error("Annotation service stopped");
+    signal?.throwIfAborted();
     if (resume) target = this.target(ref);
     const page = await this.bridge.page(ref);
     try {
+      signal?.throwIfAborted();
+      pageAccess?.assertUrl(page.url());
       const result = await this.attach(ref, page, true, target, resume);
+      pageAccess?.assertUrl(page.url());
       if (target) this.bind(ref, target);
       return result;
     }
