@@ -3,17 +3,14 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Ajv from "ajv";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { clip } from "../output.js";
 import { driverData, controlPage } from "./desktop.js";
-
-// One source of truth for the version reported to MCP servers. A hardcoded literal
-// here drifted from package.json and made the client identity lie.
-const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")).version;
+import packageManifest from "../../package.json" with { type: "json" };
 
 export class UncertainOperation extends Error {
   constructor(message, cause) { super(message, { cause }); this.mayHaveEffects = true; }
@@ -81,7 +78,7 @@ export function runProcess(command, args = [], { cwd, env, signal, timeout = 300
 }
 
 export class McpConnection {
-  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: PACKAGE_VERSION }); }
+  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: packageManifest.version }); }
   async connect(signal) {
     const c = this.candidate;
     if (c.url) this.transport = new StreamableHTTPClientTransport(new URL(c.url), { requestInit: { headers: c.headers || {}, redirect: "error" } });

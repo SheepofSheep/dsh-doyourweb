@@ -84,7 +84,12 @@ function result(name, fields) {
 
 const invocations = [
   { method: "list", parameters: request("browserTabs/list", { query: "string", sessionId: "string" }),
-    result: result("browserTabs/list", { tabs: "array", connected: "boolean" }) },
+    result: result("browserTabs/list", { tabs: "array", connected: "boolean", windows: "array" }) },
+  ...["access", "setAccess"].map(method => ({
+    method, parameters: request(`browserTabs/${method}`, method === "access" ? { sessionId: "string" }
+      : { sessionId: "string", enabled: "boolean", profile: "string", windowId: "number" }),
+    result: result(`browserTabs/${method}`, { enabled: "boolean", profile: "string", windowId: "number", windows: "array" }),
+  })),
   { method: "setup", parameters: request("browserTabs/setup", {}),
     result: result("browserTabs/setup", { url: "string", extensionPath: "string" }) },
   { method: "focus", parameters: request("browserTabs/focus", { ref: "string" }),

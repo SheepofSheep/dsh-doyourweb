@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import { bridgeProtocolRevision } from "./protocol.js";
+import { bridgeProtocolRevision, sessionWebUrl } from "./protocol.js";
 
 let socket;
 let profile;
@@ -21,6 +21,7 @@ let port = config.port || 43187;
 let pairing;
 let hostCompatibility;
 const favicons = new Map();
+const tabRevisions = new Map();
 const attached = new Set();
 let attachmentWrites = Promise.resolve();
 function rememberAttachments() {
@@ -81,7 +82,9 @@ async function inventory({ icons = true } = {}) {
     if (socket !== connection) return;
     const generation = ++inventoryGeneration;
     fileAccess = await chrome.extension.isAllowedFileSchemeAccess();
-    const tabs = (await chrome.tabs.query({})).filter(supported);
+    const [allTabs, allWindows] = await Promise.all([chrome.tabs.query({}), chrome.windows.getAll({ windowTypes: ["normal"] })]);
+    const tabs = allTabs.filter(supported);
+    const windows = allWindows.filter(window => !window.incognito).map(window => ({ id: window.id }));
     if (socket !== connection) return;
     availableTabs = tabs.length;
     const liveKeys = new Set(tabs.map(faviconKey));
@@ -89,21 +92,23 @@ async function inventory({ icons = true } = {}) {
     const rows = tabs.map(tab => ({
       id: tab.id, title: tab.title, url: tab.url, windowId: tab.windowId, active: tab.active,
       lastAccessed: tab.lastAccessed, incognito: false, discarded: tab.discarded === true,
-      frozen: tab.frozen === true, status: tab.status, favicon: favicons.get(faviconKey(tab))?.image,
+      frozen: tab.frozen === true, status: tab.status, revision: tabRevisions.get(tab.id) || 0,
+      favicon: favicons.get(faviconKey(tab))?.image,
     }));
     // Publish each metadata refresh before its caller can request an action on a new tab.
-    send({ method: "dsh.inventory", params: { profile, browserSession, browser, protocolRevision: bridgeProtocolRevision, extensionVersion: chrome.runtime.getManifest().version, tabs: rows } }, connection);
-    return { generation, tabs, rows };
+    const params = { profile, browserSession, browser, protocolRevision: bridgeProtocolRevision,
+      extensionVersion: chrome.runtime.getManifest().version, windows };
+    send({ method: "dsh.inventory", params: { ...params, tabs: rows } }, connection);
+    return { generation, tabs, rows, params };
   });
   inventoryRead = published.catch(() => {});
   const metadata = await published;
   if (!icons || !metadata) return;
-  const { generation, tabs, rows } = metadata;
+  const { generation, tabs, rows, params } = metadata;
   const images = await Promise.all(tabs.map(cachedFavicon));
   if (socket !== connection || generation !== inventoryGeneration) return;
   if (images.some((image, index) => image !== rows[index].favicon)) {
-    send({ method: "dsh.inventory", params: { profile, browserSession, browser, protocolRevision: bridgeProtocolRevision, extensionVersion: chrome.runtime.getManifest().version,
-      tabs: rows.map((tab, index) => ({ ...tab, favicon: images[index] })) } }, connection);
+    send({ method: "dsh.inventory", params: { ...params, tabs: rows.map((tab, index) => ({ ...tab, favicon: images[index] })) } }, connection);
   }
 }
 
@@ -162,6 +167,42 @@ async function command(message, connection) {
     case "chrome.debugger.sendCommand":
       if (!attached.has(target.tabId)) throw new Error("Tab is not attached");
       return chrome.debugger.sendCommand(target, args[1], args[2]);
+    case "dsh.openTab": {
+      const url = sessionWebUrl(args[1], port);
+      if (!url) throw new Error("A regular HTTP/HTTPS URL without credentials is required");
+      const window = await chrome.windows.get(target);
+      if (window.incognito || window.type !== "normal") throw new Error("Select a normal browser window in DoYourWeb");
+      if (socket !== connection || stopped) throw new Error("Browser extension disconnected");
+      const tab = await chrome.tabs.create({ windowId: window.id, url: url.href, active: false });
+      // Chrome can report only pendingUrl on creation. Publish the tab before
+      // returning once a supported URL has been committed by the browser.
+      if (!supported(tab)) {
+        const load = new Promise((resolve, reject) => {
+          const finish = callback => value => {
+            clearTimeout(deadline);
+            chrome.tabs.onUpdated.removeListener(updated);
+            chrome.tabs.onRemoved.removeListener(removed);
+            callback(value);
+          };
+          const complete = finish(resolve), fail = finish(reject);
+          const committed = current => current.url && current.url !== "about:blank";
+          const updated = (id, _changes, current) => { if (id === tab.id && committed(current)) complete(); };
+          const removed = id => { if (id === tab.id) fail(new Error("The new browser tab was closed")); };
+          const deadline = setTimeout(() => fail(new Error("The new tab did not become ready; it may still be open")), 10000);
+          chrome.tabs.onUpdated.addListener(updated);
+          chrome.tabs.onRemoved.addListener(removed);
+          void chrome.tabs.get(tab.id).then(current => { if (committed(current)) complete(); }, fail);
+        });
+        await load;
+      }
+      await inventory({ icons: false });
+      return { tabId: tab.id };
+    }
+    case "dsh.tabState": {
+      const tab = await chrome.tabs.get(target).catch(() => undefined);
+      if (!tab || tab.incognito || tab.pendingUrl) return {};
+      return { title: tab.title, url: tab.url, windowId: tab.windowId, revision: tabRevisions.get(target) || 0 };
+    }
     case "dsh.focus": {
       const tab = await chrome.tabs.get(target);
       if (!supported(tab)) throw new Error("Tab is unsupported");
@@ -291,10 +332,17 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   void chrome.action.setBadgeText({ tabId: source.tabId, text: "" }).catch(() => {});
   if (controlled) send({ method: "chrome.debugger.onDetach", params: [source, reason] });
 });
-chrome.tabs.onUpdated.addListener(scheduleInventory);
+chrome.tabs.onUpdated.addListener((tabId, change = {}) => {
+  if (change.status === "loading" || change.url) tabRevisions.set(tabId, (tabRevisions.get(tabId) || 0) + 1);
+  scheduleInventory();
+});
 chrome.tabs.onCreated.addListener(scheduleInventory);
-chrome.tabs.onRemoved.addListener(scheduleInventory);
+chrome.tabs.onRemoved.addListener(tabId => { tabRevisions.delete(tabId); scheduleInventory(); });
 chrome.tabs.onActivated.addListener(scheduleInventory);
+chrome.tabs.onAttached.addListener(scheduleInventory);
+chrome.tabs.onDetached.addListener(scheduleInventory);
+chrome.windows.onCreated.addListener(scheduleInventory);
+chrome.windows.onRemoved.addListener(scheduleInventory);
 const reconnect = () => { void connect().catch(console.warn); };
 chrome.runtime.onStartup.addListener(reconnect);
 chrome.runtime.onInstalled.addListener(reconnect);

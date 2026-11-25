@@ -11,6 +11,7 @@ import { WebMCP } from "../src/webmcp.js";
 import { serialize } from "../src/output.js";
 import { parseRef } from "../src/protocol.js";
 import { Annotations } from "../src/annotations.js";
+import { SessionBrowserAccess } from "../src/session-browser-access.js";
 
 const home = await mkdtemp(path.join(os.tmpdir(), "dsh-browser-test-"));
 const favicon = await readFile(new URL("../extension/icons/icon-16.png", import.meta.url));
@@ -85,6 +86,11 @@ async function waitForPairing() {
   while (Date.now() < deadline) {
     const [request] = bridge.pairings.list();
     if (request) {
+      const popup = await browser.newPage();
+      try {
+        await popup.goto(`chrome-extension://${bridge.id}/popup.html`);
+        await popup.locator("#pairing #code").filter({ hasText: request.code }).waitFor();
+      } finally { await popup.close(); }
       const setup = await browser.newPage();
       try {
         await setup.goto(bridge.approvalUrl("setup"));
@@ -148,6 +154,25 @@ try {
   assert.equal(image.readUInt32BE(16), 16);
   assert.equal(image.readUInt32BE(20), 16);
   const engine = new BrowserEngine(bridge, { artifactDir: path.join(home, "captures") });
+  const access = new SessionBrowserAccess(bridge);
+  const agent = { session: { id: "open-tab-fixture" } };
+  const openedUrl = fixtureUrl + "/?session-open=1";
+  await assert.rejects(access.authorize("open", openedUrl, { agent }), /enable browser access/);
+  const [{ profile, windowId }] = access.state(agent.session.id).windows;
+  access.set({ sessionId: agent.session.id, enabled: true, profile, windowId });
+  const createdPage = browser.waitForEvent("page");
+  const opened = await access.authorize("open", openedUrl, { agent });
+  const created = await createdPage;
+  try {
+    assert.equal(opened.status, "authorized");
+    assert.equal(opened.url, openedUrl);
+    const pageAccess = access.get(agent.session.id).get(opened.tab);
+    const result = await engine.read(opened.tab, { pageAccess }, pageAccess.signal);
+    assert.match(result.content, /Browser test/);
+    access.set({ sessionId: agent.session.id, enabled: false });
+    assert.equal(pageAccess.signal.aborted, true);
+    console.log("PASS: a session opens a real tab in the selected Chromium window, reads it over CDP, and revokes access on disable.");
+  } finally { access.close(); await created.close(); }
   const local = await browser.newPage();
   const localUrl = pathToFileURL(path.resolve("test/fixtures/webmcp.html")).href;
   await local.goto(localUrl);
@@ -157,8 +182,11 @@ try {
     if (!localTab) await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(localTab, "file HTML must appear in extension inventory when file access is enabled");
+  bridge.decoratePage = async () => { throw new Error("Annotation attachment fixture failure"); };
   const localRead = await engine.read(localTab.ref);
-  assert.ok(localRead.snapshot, "local HTML can be read through CDP");
+  delete bridge.decoratePage;
+  assert.ok(localRead.snapshot, "local HTML can be read through CDP after an annotation attachment error");
+  assert.ok(bridge.diagnostics.state().events.some(event => event.phase === "decorate_failed"));
   await local.close();
   const initial = await engine.read(tab.ref);
   // Synthetic extension overlays can add a body inside an open shadow root.
@@ -667,6 +695,41 @@ try {
   assert.equal(annotationMessages.length, 2);
   assert.match(annotationMessages[1].content[0].text, /Second annotation/);
   assert.equal(annotationMessages[1].mode, "draft");
+  await reopened.evaluate(() => {
+    const outer = document.createElement("div"); outer.id = "outer-shadow";
+    outer.style.marginTop = "1000px";
+    outer.innerHTML = '<span id="annotation-target" hidden>Unrelated light DOM element</span>';
+    const open = outer.attachShadow({ mode: "open" });
+    open.innerHTML = '<div id="inner-shadow"></div><div id="closed-shadow" style="display:inline-block"></div>';
+    open.querySelector("#inner-shadow").attachShadow({ mode: "open" }).innerHTML =
+      '<button id="annotation-target" style="width:140px;height:30px">Open shadow target</button>';
+    open.querySelector("#closed-shadow").attachShadow({ mode: "closed" }).innerHTML =
+      '<button style="width:140px;height:30px">Closed shadow target</button>';
+    document.body.append(outer);
+  });
+  const shadowSelector = "#outer-shadow >> #inner-shadow >> #annotation-target";
+  const shadowPick = reopened.locator(shadowSelector);
+  await annotations.start(afterRestart.ref);
+  await shadowPick.click();
+  assert.ok(await reopened.evaluate(() => scrollY) > 500);
+  await fillAnnotation("Nested open shadow annotation");
+  await annotationControl('input[type="checkbox"]', element => { element.checked = true; });
+  await clickAnnotation("button.primary");
+  await waitAnnotation("已加入");
+  const openAnnotation = annotationMessages.at(-1);
+  assert.ok(openAnnotation.content[0].text.includes(shadowSelector));
+  assert.equal(await shadowPick.textContent(), "Open shadow target");
+  const cropped = Buffer.from(openAnnotation.content[1].data, "base64");
+  assert.equal(cropped.readUInt32BE(16), 140);
+  assert.equal(cropped.readUInt32BE(20), 30);
+  await annotations.start(afterRestart.ref);
+  const closedSelector = "#outer-shadow >> #closed-shadow";
+  await reopened.locator(closedSelector).click();
+  await fillAnnotation("Closed shadow host annotation");
+  await clickAnnotation("button.primary");
+  await waitAnnotation("已加入");
+  assert.ok(annotationMessages.at(-1).content[0].text.includes(closedSelector));
+  console.log("PASS: nested Shadow DOM picks and cropped screenshots retain the selected target after scrolling.");
   await reopened.reload();
   await toolbar.waitFor();
   assert.equal(await reopened.frameLocator("iframe:not(#upload-frame)").locator('[data-dsh-annotation="toolbar"]').count(), 0, "toolbar must not be injected into child frames");

@@ -18,7 +18,7 @@ test("visible consumers share inventory polling and connection changes include a
   assert.equal(calls, 1); assert.equal(changes, 2);
   t.mock.timers.tick(1000); await Promise.resolve();
   assert.equal(calls, 2); assert.equal(changes, 2);
-  state = { connected: true, tabs: [] };
+  state = { connected: true, tabs: [], windows: [{ profile: "test", windowId: 1, tabCount: 0 }] };
   focus.dispatchEvent(new Event("focus")); await Promise.resolve();
   assert.equal(changes, 4, "connected with no eligible tabs differs from disconnected");
   first.abort();
@@ -34,6 +34,9 @@ test("visible consumers share inventory polling and connection changes include a
   state = { connected: true, tabs: [] };
   t.mock.timers.tick(1000); await Promise.resolve();
   assert.equal(changes, 8);
+  state.windows = [{ profile: "second-profile", windowId: 2, tabCount: 0 }];
+  t.mock.timers.tick(1000); await Promise.resolve();
+  assert.equal(changes, 9, "a window containing only browser-internal pages refreshes the window picker");
   second.abort(); const stoppedAt = calls;
   t.mock.timers.tick(5000); focus.dispatchEvent(new Event("focus")); await Promise.resolve();
   assert.equal(calls, stoppedAt, "hidden consumers leave no polling or focus listener");

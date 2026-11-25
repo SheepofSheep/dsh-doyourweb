@@ -74,7 +74,7 @@ export class WebMCP {
     if (options.mode === "dom" || options.cursor || this.engine.receipts.get(ref)?.mayHaveLateEffects) {
       return this.engine.read(ref, options, signal);
     }
-    const catalog = await this.list(ref, { limit: options.limit || this.engine.snapshotChars }, signal);
+    const catalog = await this.list(ref, { limit: options.limit || this.engine.snapshotChars, pageAccess: options.pageAccess }, signal);
     if (catalog.omitted > 0 || catalog.tools.some(tool => tool.available && !tool.annotations?.consequentialHint)) {
       return catalog;
     }
@@ -141,7 +141,7 @@ export class WebMCP {
         await dispose(handle);
         throw error;
       }
-    }, signal));
+    }, signal, false, options.pageAccess));
   }
 
   async call(ref, options, signal) {
@@ -220,6 +220,6 @@ export class WebMCP {
       } finally {
         if (state.consumed) await this.drop(ref);
       }
-    }, signal));
+    }, signal, false, options.pageAccess));
   }
 }

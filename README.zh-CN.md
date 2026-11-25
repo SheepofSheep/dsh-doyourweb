@@ -4,7 +4,7 @@
 
 让 DeepSeek Harness 引用并操作你已经打开、保持登录的 Chrome 和 Edge 页面，用精简的页面上下文和批量操作减少重复读取。
 
-`0.2.5` 修复浏览器侧栏空白的面板回归，增强配对与桥接错误处理，并修正批注、截图、应用安装和会话授权的若干边界问题。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
+`0.2.6` 修复插件安装包启动和嵌套 Shadow DOM 批注截图，并增加可选的会话浏览器访问。用法见[浏览器工作流与诊断](docs/browser-workflow.md)和[批注与应用控制](docs/annotations-and-apps.md)。
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -27,7 +27,7 @@
 
 项目由 DSH 插件和配套的 Manifest V3 浏览器扩展组成。插件接入原生 `@`、`/` 菜单，扩展提供标签页信息和控制通道。完成一次配对后，扩展会在后台重连，不必一直打开弹窗。
 
-当前版本为 **0.2.5**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
+当前版本为 **0.2.6**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
 
 ## 02 · 功能预览
 
@@ -120,7 +120,7 @@ flowchart LR
     Apps --> Desktop["Cua Driver 桌面回退"]
 ```
 
-模型的浏览器工具只能访问用户在当前会话中引用的标签页。网页内容是不可信数据，不会作为用户指令或操作授权。
+浏览器工具可以访问当前会话中引用的标签页。开启会话浏览器访问后，Agent 也可以在选定窗口新开网页并申请使用已有标签页。网页内容不能授予操作权限。
 
 <a id="quick-start"></a>
 
@@ -145,7 +145,7 @@ dsh-doyourweb
 ### 构建并安装本地版本
 
 ```sh
-git clone --branch ver0.2.5 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.6 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -189,6 +189,8 @@ npm run build
 ### 使用文档
 
 左侧导航的**浏览器**按钮会打开原生右侧面板，可切换网页、应用和诊断日志。点击网页或应用只加入当前草稿，不会自动发送；`@` 菜单继续可用。网页／应用上下文、批注和主动引用的日志显示为可展开的短标题图标标签，模型收到的完整内容保持不变。诊断只在本机内存保留最多 600 条元数据，可暂停、清空、导出，只有点击引用才加入草稿。批注栏支持单独收起编辑区或收纳到页面边缘；收纳会停止选取，保留未完成批注和位置，方便恢复。
+
+在**浏览器 → 网页**开启当前会话的浏览器访问，再选择一个已配对的 Chrome 或 Edge 窗口。开关默认关闭。开启后，Agent 可在选定窗口新开普通 HTTP(S) 网页，也可按关键词查找现有标签页。使用已有标签页前，请在 DSH 确认卡中选定页面。网页使用原浏览器登录状态。关闭开关会撤销通过此功能取得的授权，手动 `@` 引用仍可使用。已有配对可以继续使用，更新或重新加载配套扩展后即可使用此功能。
 
 引用页面后，可以这样描述任务：
 

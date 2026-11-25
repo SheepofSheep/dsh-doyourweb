@@ -25,7 +25,8 @@ const bundle = await build({ entryPoints: ["extension/background.js"], bundle: t
 function event() {
   const listeners = [];
   return { listeners, addListener: fn => listeners.push(fn),
-    fire: (...args) => listeners.map(fn => fn(...args)) };
+    removeListener: fn => { const index = listeners.indexOf(fn); if (index >= 0) listeners.splice(index, 1); },
+    fire: (...args) => [...listeners].map(fn => fn(...args)) };
 }
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -47,7 +48,8 @@ function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, sessi
   const chrome = {
     extension: { isAllowedFileSchemeAccess: async () => stored.fileAccess === true },
     tabs: { query: async () => tabs, get: async id => tabs.find(tab => tab.id === id),
-      onUpdated: event(), onCreated: event(), onRemoved: event(), onActivated: event() },
+      onUpdated: event(), onCreated: event(), onRemoved: event(), onActivated: event(), onAttached: event(), onDetached: event() },
+    windows: { getAll: async () => [{ id: 1, type: "normal" }], onCreated: event(), onRemoved: event() },
     debugger: { onEvent: event(), onDetach: event(), attach: noop, getTargets: async () => [], sendCommand: async () => ({}), detach: async target => detached.push(target.tabId) },
     action: { setBadgeText: async options => badges.push(options.text), setBadgeBackgroundColor: noop, setTitle: async options => titles.push(options.title) },
     runtime: { onStartup: event(), onInstalled: event(), onMessage: event(), getManifest: () => ({ version: "0.2.3" }), getURL: path => `chrome-extension://test/${path}` },
@@ -69,6 +71,41 @@ function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, sessi
   });
   return { chrome, sockets, timers, detached, fetched, badges, titles, alarms, stored, initialize: () => load(stored) };
 }
+
+test("opening a web tab waits for the selected normal window's committed URL and publishes its inventory", async () => {
+  const tabs = [{ id: 5, windowId: 2, title: "Other", url: "https://example.org/" }];
+  const running = worker({}, tabs);
+  running.chrome.windows.getAll = async () => [{ id: 1, type: "normal" }, { id: 2, type: "normal" }, { id: 3, incognito: true }];
+  running.chrome.windows.get = async id => ({ id, type: "normal", incognito: id === 3 });
+  const creates = [];
+  running.chrome.tabs.create = async options => {
+    creates.push(options);
+    const pending = { id: 6, windowId: options.windowId, pendingUrl: options.url };
+    tabs.push(pending); return pending;
+  };
+  running.initialize(); await flush();
+  const connection = running.sockets[0]; connection.open(); await flush();
+  assert.deepEqual(connection.messages.find(message => message.method === "dsh.inventory").params.windows, [{ id: 1 }, { id: 2 }]);
+  for (const [id, params] of [[1, [1, "file:///private"]], [2, [1, "http://localhost:43188/manage"]], [3, [3, "https://example.com/"]]]) {
+    await connection.onmessage({ data: JSON.stringify({ id, method: "dsh.openTab", params }) });
+    assert.match(connection.messages.find(message => message.id === id).error, /HTTP\/HTTPS URL|normal browser window/);
+  }
+  assert.equal(creates.length, 0);
+  const opening = connection.onmessage({ data: JSON.stringify({ id: 4, method: "dsh.openTab", params: [1, "https://example.com/"] }) });
+  await flush();
+  assert.equal(connection.messages.some(message => message.id === 4), false);
+  Object.assign(tabs[1], { title: "New tab", url: creates[0].url });
+  delete tabs[1].pendingUrl;
+  running.chrome.tabs.onUpdated.fire(6, { url: tabs[1].url }, tabs[1]);
+  await opening;
+  assert.deepEqual(JSON.parse(JSON.stringify(creates[0])), { windowId: 1, url: "https://example.com/", active: false });
+  const responseIndex = connection.messages.findIndex(message => message.id === 4);
+  assert.deepEqual(connection.messages[responseIndex].result, { tabId: 6 });
+  assert.ok(connection.messages.slice(0, responseIndex).some(message => message.method === "dsh.inventory"
+    && message.params.tabs.some(tab => tab.id === 6 && tab.windowId === 1 && tab.revision === 1)));
+  await connection.onmessage({ data: JSON.stringify({ id: 5, method: "dsh.tabState", params: [6] }) });
+  assert.deepEqual(connection.messages.find(message => message.id === 5).result, { url: "https://example.com/", title: "New tab", windowId: 1, revision: 1 });
+});
 
 test("worker restart reconciles only recorded debugger sessions owned by this extension", async () => {
   const session = { browserSession: "browser-lifetime", ownedTabs: [7, 8, 9] };

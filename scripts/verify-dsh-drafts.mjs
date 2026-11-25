@@ -11,7 +11,7 @@ export async function verifyDraftInput(bundle, root) {
   const source = await readFile(bundle, "utf8");
   // The installed shell is private to the DSH loader factory. Expose it at
   // the CommonJS return in this test copy, regardless of export formatting.
-  const factoryReturn = /\breturn\s+module\s*\.\s*exports(?=\s*;?\s*}\s*}\s*\))/g;
+  const factoryReturn = /\breturn\s+module\s*\.\s*exports(?=\s*;?\s*}\s*(?:}\s*\)|,\s*meta:))/g;
   assert.equal([...source.matchAll(factoryReturn)].length, 1, "expected one CommonJS factory return in the DSH conversation bundle");
   const testSource = source.replace(factoryReturn, 'if (typeof SessionInputShell === "function") module.exports.SessionInputShell ??= SessionInputShell; $&');
   const browser = await chromium.launch({ headless: true, channel: "chromium" });

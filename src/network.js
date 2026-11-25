@@ -2,7 +2,7 @@ import { clip } from "./output.js";
 
 // Keep metadata only, without retaining Playwright Request/Response objects or bodies.
 export class NetworkCapture {
-  constructor(page) {
+  constructor(page, grantSignal) {
     this.page = page;
     this.active = true;
     this.since = new Date().toISOString();
@@ -37,10 +37,16 @@ export class NetworkCapture {
       },
     };
     for (const [event, listener] of Object.entries(this.listeners)) page.on(event, listener);
+    if (grantSignal) {
+      const stop = () => { this.close(); this.clear(); };
+      grantSignal.addEventListener("abort", stop, { once: true });
+      this.removeGrantListener = () => grantSignal.removeEventListener("abort", stop);
+    }
   }
 
   close() {
     this.active = false;
+    this.removeGrantListener?.();
     for (const [event, listener] of Object.entries(this.listeners)) this.page.off(event, listener);
   }
 

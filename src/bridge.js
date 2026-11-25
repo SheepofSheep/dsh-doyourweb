@@ -12,7 +12,7 @@ import { canControl, parseRef, tabRef } from "./protocol.js";
 import { managementPage } from "./manage.js";
 import { Diagnostics } from "./diagnostics.js";
 import { LocalApproval, approvalScript } from "./auth.js";
-import { bridgeProtocolRevision } from "../extension/protocol.js";
+import { bridgeProtocolRevision, sessionWebUrl } from "../extension/protocol.js";
 
 export { extensionId } from "./pairing.js";
 
@@ -306,6 +306,7 @@ export class BrowserBridge extends EventEmitter {
           }
           profile.extensionVersion = /^[\d.]{1,24}$/.test(info.extensionVersion || "") ? info.extensionVersion : undefined;
           profile.protocolRevision = Number.isSafeInteger(info.protocolRevision) ? info.protocolRevision : undefined;
+          profile.windows = new Set(Array.isArray(info.windows) ? info.windows.filter(window => Number.isSafeInteger(window?.id) && window.id >= 0).map(window => window.id) : []);
           profile.compatibilityWarning = profile.protocolRevision !== bridgeProtocolRevision ? "扩展的协议修订不同或扩展较旧，请同步更新。"
             : profile.extensionVersion !== this.diagnostics.version ? "主机与扩展版本不同，请同步更新。" : "";
           profile.tabs = new Map(info.tabs.filter(tab => Number.isSafeInteger(tab.id) && !tab.incognito && canControl(tab.url))
@@ -316,6 +317,7 @@ export class BrowserBridge extends EventEmitter {
           for (const relay of [...this.relays.values()]) {
             if (relay.profile === profile && !profile.tabs.has(relay.tabId)) void this.dropRelay(relay);
           }
+          this.emit("inventoryChanged", profile.id);
         } else if (data.method === "dsh.annotation.start") {
           const selected = profile && this.profiles.get(profile.id) === profile && profile.tabs.get(data.params?.tabId);
           const reply = error => {
@@ -361,7 +363,10 @@ export class BrowserBridge extends EventEmitter {
       }
     });
     ws.on("close", () => {
-      if (profile && this.profiles.get(profile.id) === profile) this.profiles.delete(profile.id);
+      if (profile && this.profiles.get(profile.id) === profile) {
+        this.profiles.delete(profile.id);
+        this.emit("inventoryChanged", profile.id);
+      }
       for (const [id, pending] of this.pending) {
         if (pending.ws === ws) {
           this.diagnostics.record({ id, method: pending.method, phase: "disconnect", elapsedMs: Date.now() - pending.started, error: "disconnected" });
@@ -404,6 +409,24 @@ export class BrowserBridge extends EventEmitter {
     return [...this.profiles.values()].flatMap(profile => [...profile.tabs.values()])
       .filter(tab => !needle || `${tab.title} ${tab.url} ${tab.browser}`.toLowerCase().includes(needle))
       .sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0)).slice(0, 50);
+  }
+
+  accessWindows() {
+    return [...this.profiles.values()].flatMap(profile => [...profile.windows].map(windowId => {
+      const tabs = [...profile.tabs.values()].filter(tab => tab.windowId === windowId && sessionWebUrl(tab.url, this.port));
+      return { profile: profile.id, windowId, browser: profile.browser, profileLabel: profile.sourceId.slice(0, 8),
+        activeTitle: tabs.find(tab => tab.active)?.title, tabCount: tabs.length };
+    }));
+  }
+
+  async openTab(profile, windowId, url) {
+    if (!profile.windows.has(windowId) || this.profiles.get(profile.id) !== profile) throw new Error("The selected browser window is no longer available");
+    const result = await this.request(profile, "dsh.openTab", [windowId, url]);
+    const tab = profile.tabs.get(result?.tabId);
+    if (!tab || tab.windowId !== windowId || !sessionWebUrl(tab.url, this.port) || this.profiles.get(profile.id) !== profile) {
+      throw new Error("The new tab is outside the selected window or did not load a supported web page. Check the browser before retrying.");
+    }
+    return tab;
   }
 
   resolve(ref) {

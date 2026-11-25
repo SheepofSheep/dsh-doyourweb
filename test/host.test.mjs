@@ -36,3 +36,5 @@ test("only original claimed user input grants access after context preparation",
   () => lifecycle("original-input", /PASS: original user input/));
 test("a small initial snapshot budget explicitly requests a read",
   () => lifecycle("small-budget", /PASS: small snapshot budget/));
+test("the session browser mode opens scoped tabs, requires native selection and revokes only mode grants",
+  () => lifecycle("session-access", /PASS: session browser tools scope/));

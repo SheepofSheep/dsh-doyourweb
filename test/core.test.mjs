@@ -49,9 +49,9 @@ test("Remote descriptors carry strict codecs the DSH client gateway mounts", () 
   const strict = codec => codec.mode === "strict" && typeof codec.typeSymbol === "string"
     && codec.typeSymbol.length > 0 && typeof codec.create === "function"
     && typeof codec.create().parse === "function";
-  assert.equal(descriptors.length, 7);
+  assert.equal(descriptors.length, 9);
   for (const descriptor of descriptors) {
-    assert.match(descriptor.id, /^dsh-doyourweb#browserTabs\/(list|setup|focus|apps|annotationSession|manage|diagnostics)$/);
+    assert.match(descriptor.id, /^dsh-doyourweb#browserTabs\/(list|access|setAccess|setup|focus|apps|annotationSession|manage|diagnostics)$/);
     assert.equal(descriptor.invocation.kind, "direct");
     assert.deepEqual(descriptor.cancellation, { parameter: "signal" });
     assert.ok(strict(descriptor.result), `${descriptor.method} result needs a strict codec`);
@@ -65,6 +65,9 @@ test("Remote descriptors carry strict codecs the DSH client gateway mounts", () 
   const parse = (method, value) => byMethod.get(method).parameters[0].codec.create().parse(value);
   assert.deepEqual(parse("list", { query: "docs" }), { query: "docs" });
   assert.deepEqual(parse("list", {}), {});
+  assert.deepEqual(parse("setAccess", { sessionId: "abc", enabled: true, profile: "browser", windowId: 3 }),
+    { sessionId: "abc", enabled: true, profile: "browser", windowId: 3 });
+  assert.throws(() => parse("setAccess", { windowId: -1 }), /nonnegative integer/);
   assert.deepEqual(parse("setup", {}), {});
   assert.deepEqual(parse("focus", { ref: "dsh-browser://abc/1" }), { ref: "dsh-browser://abc/1" });
   assert.throws(() => parse("focus", { ref: 1 }), /must be a string/);

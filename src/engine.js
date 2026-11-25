@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { mkdir, stat, access, realpath } from "node:fs/promises";
+import { mkdir, stat, access, realpath, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { canControl } from "./protocol.js";
 import { clip, serialize } from "./output.js";
@@ -137,7 +137,7 @@ export class BrowserEngine {
     this.networks.clear();
   }
 
-  async withPage(ref, operation, signal, active = false) {
+  async withPage(ref, operation, signal, active = false, pageAccess) {
     checkpoint(signal);
     const controller = active && this.bridge.cdp ? new AbortController() : undefined;
     const actionSignal = controller ? signal ? AbortSignal.any([signal, controller.signal]) : controller.signal : signal;
@@ -146,8 +146,11 @@ export class BrowserEngine {
     try {
       const page = await this.bridge.page(ref);
       checkpoint(actionSignal);
+      pageAccess?.assertUrl(page.url());
       if (controller) activity = await browserActivity(this.bridge, ref).catch(() => {});
-      return await operation(page, actionSignal);
+      const result = await operation(page, actionSignal);
+      if (!active) pageAccess?.assertUrl(page.url());
+      return result;
     } finally {
       if (controller) this.actions.delete(ref);
       await activity?.close();
@@ -215,7 +218,7 @@ export class BrowserEngine {
       checkpoint(signal);
       return boundedChunk(state, 0, limit, { tab: ref,
         ...(this.receipts.has(ref) ? { lastAction: this.receipts.get(ref) } : {}) });
-    }, signal));
+    }, signal, false, options.pageAccess));
   }
 
   locator(page, step) {
@@ -235,7 +238,9 @@ export class BrowserEngine {
       const actionId = randomUUID().slice(0, 8);
       const uploads = new Map();
       let document = await this.document(page);
+      const pageAccess = options.pageAccess;
       try {
+        pageAccess?.assertUrl(document.url);
         if (!state || options.snapshot !== state.id || document.epoch !== state.epoch || document.url !== state.url) {
           throw new Error("Snapshot is stale. Use the latest DOM snapshot for this tab; a new read without cursor replaces it, while cursor pages and reads of other tabs do not. Call browser_read before acting; no actions were performed.");
         }
@@ -243,6 +248,7 @@ export class BrowserEngine {
         for (const step of options.steps) if (step.op === "navigate") {
           if (!step.value?.trim()) throw new Error('navigate requires a URL in step.value, for example {"op":"navigate","value":"https://example.com"}; url and target are not supported. No actions were performed.');
           if (!canControl(step.value)) throw new Error("navigate step.value must be an HTTP/HTTPS or local file URL. No actions were performed.");
+          pageAccess?.assertUrl(step.value);
         }
         for (const [index, step] of options.steps.entries()) if (step.op === "upload" || step.op === "drop" && step.files) {
           if (!Array.isArray(step.files) || !step.files.length || step.files.length > 20) throw new Error("Upload requires 1-20 explicitly authorized absolute file paths");
@@ -291,6 +297,7 @@ export class BrowserEngine {
         this.bridge.on?.("commandSent", commandSent);
         try {
           checkpoint(signal);
+          pageAccess?.assertUrl(page.url());
           if (step.op === "navigate") {
             await invoke(() => page.goto(step.value, { waitUntil: "domcontentloaded", signal }));
           } else if (step.op === "back") await invoke(() => page.goBack({ waitUntil: "domcontentloaded", signal }));
@@ -365,6 +372,7 @@ export class BrowserEngine {
           completed.push({ index, op: step.op });
           checkpoint(signal);
           const after = await this.document(page);
+          pageAccess?.assertUrl(after.url);
           if (after.epoch !== document.epoch || after.url !== document.url) {
             const previous = new URL(document.url), current = new URL(after.url);
             const soft = after.epoch === document.epoch && current.origin === previous.origin && current.pathname === previous.pathname;
@@ -401,6 +409,7 @@ export class BrowserEngine {
         const wait = { timeout: expected.timeout || 8000, signal };
         try {
           checkpoint(signal);
+          pageAccess?.assertUrl(page.url());
           if (expected.kind === "url") await page.waitForURL(url => url.href === expected.value, { ...wait, waitUntil: "commit" });
           else {
             const target = this.locator(page, expected);
@@ -411,6 +420,7 @@ export class BrowserEngine {
             { kind: expected.kind, value: expected.value }, wait);
           }
           checkpoint(signal);
+          pageAccess?.assertUrl(page.url());
           result.expectation = { kind: expected.kind, status: "matched" };
         } catch (error) {
           result.expectation = { kind: expected.kind, status: signal?.aborted ? "cancelled" : error.name === "TimeoutError" ? "unmet" : "error", error: clip(error.message || error, 200) };
@@ -421,7 +431,9 @@ export class BrowserEngine {
       if (result.cancelled) return boundAction(result, budget);
       if (options.observe === "summary") return boundAction(result, budget);
       try {
+        pageAccess?.assertUrl(page.url());
         const next = await this.snapshot(ref, page, options.observation || {}, signal);
+        pageAccess?.assertUrl(next.url);
         if (options.observe === "handle") {
           next.refsAvailable = false;
           return boundAction({ ...result, snapshot: next.id, cursor: `${next.id}:0`, url: clip(next.url, 512), title: clip(next.title, 128), refs: "read_required" }, budget);
@@ -434,13 +446,13 @@ export class BrowserEngine {
           return { ...result, cancelled: true };
         }
         receipt.readError = true;
-        return boundAction({ ...result, url: clip(page.url(), 256), readError: clip(error.message, 200) }, budget);
+        return boundAction({ ...result, ...(!pageAccess ? { url: clip(page.url(), 256) } : {}), readError: clip(error.message, 200) }, budget);
       }
-    }, signal, true));
+    }, signal, true, options.pageAccess));
   }
 
   upload(ref, options, signal) {
-    return this.act(ref, { snapshot: options.snapshot, observe: options.observe, observation: options.observation, expect: options.expect,
+    return this.act(ref, { snapshot: options.snapshot, observe: options.observe, observation: options.observation, expect: options.expect, pageAccess: options.pageAccess,
       steps: [{ op: "upload", ref: options.ref, selector: options.selector, frame: options.frame, files: options.files }] }, signal);
   }
 
@@ -450,14 +462,14 @@ export class BrowserEngine {
       let capture = this.networks.get(ref);
       if (options.action === "start" && !capture?.active) {
         capture?.close();
-        capture = new NetworkCapture(page);
+        capture = new NetworkCapture(page, options.pageAccess?.signal);
         this.networks.set(ref, capture);
       }
       if (!capture) return { tab: ref, capturing: false, capturingSince: null, requests: [], note: "Not recording. Use action:start before the activity; past requests cannot be recovered." };
       if (options.action === "stop") capture.close();
       if (options.action === "clear") capture.clear();
       return { tab: ref, ...capture.result(options) };
-    }, signal));
+    }, signal, false, options.pageAccess));
   }
 
   async capture(ref, options = {}, signal) {
@@ -465,10 +477,12 @@ export class BrowserEngine {
       checkpoint(signal);
       await mkdir(this.artifactDir, { recursive: true });
       const output = path.join(this.artifactDir, `dsh-capture-${randomUUID()}.png`);
-      await page.screenshot({ path: output, fullPage: options.fullPage === true, animations: "disabled", signal });
+      const bytes = await page.screenshot({ path: options.pageAccess ? undefined : output, fullPage: options.fullPage === true, animations: "disabled", signal });
+      options.pageAccess?.assertUrl(page.url());
+      if (options.pageAccess) await writeFile(output, bytes);
       await this.captureStore?.record(output);
       checkpoint(signal);
       return { tab: ref, url: clip(page.url(), 512), path: output, mediaType: "image/png" };
-    }, signal));
+    }, signal, false, options.pageAccess));
   }
 }
