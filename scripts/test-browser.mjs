@@ -140,7 +140,7 @@ try {
   await configurePort(43188);
   await bridge.start();
   const pairing = await waitForPairing();
-  assert.match(pairing.code, /^[0-9]{4}$/);
+  assert.match(pairing.code, /^[0-9]{6}$/, "the pairing code must be wide enough that guessing it is not viable");
   const tab = await waitForTab();
   assert.match(tab.favicon, /^data:image\/png;base64,/);
   const image = Buffer.from(tab.favicon.split(",")[1], "base64");

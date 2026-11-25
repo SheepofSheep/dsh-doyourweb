@@ -11,6 +11,11 @@ captures/
 *.tgz
 *.log
 
+# Local promo render project and working notes
+/promo-astra/
+/dsh-doyourweb-诊断与修复建议.md
+/docs/plans/
+
 # Local browser-task output, not project documentation or extension assets
 /douyin-*-report.md
 /nailong.png

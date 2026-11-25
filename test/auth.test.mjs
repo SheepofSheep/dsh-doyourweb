@@ -22,3 +22,19 @@ test("DSH approval invitations are scoped, short-lived and consumed once", () =>
   auth.close();
   assert.equal(auth.permits(active, "manage"), false);
 });
+
+test("an in-use approval session is not evicted by newer ones", () => {
+  // The management page polls every 4 s. Eviction must cost the least recently
+  // used session, not the tab the user currently has open.
+  const auth = new LocalApproval();
+  const live = auth.exchange(auth.invite("manage"), "manage");
+  assert.equal(auth.permits(live, "manage"), true);
+  for (let index = 0; index < 130; index++) {
+    auth.permits(live, "manage");
+    auth.exchange(auth.invite("manage"), "manage");
+  }
+  assert.equal(auth.permits(live, "manage"), true, "an actively used session survives the cap");
+  const idle = auth.exchange(auth.invite("manage"), "manage");
+  for (let index = 0; index < 140; index++) auth.exchange(auth.invite("manage"), "manage");
+  assert.equal(auth.permits(idle, "manage"), false, "an unused session is evicted instead");
+});

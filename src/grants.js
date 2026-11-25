@@ -48,12 +48,18 @@ export class Grants {
     let changed = false;
     if (!allowed) { allowed = new Set(); this.sessions.set(sessionId, allowed); }
     for (const ref of accepted) {
-      if (allowed.has(ref)) continue;
+      // Re-citing a tab refreshes its position. Without this, eviction is by
+      // first-seen order, so a tab cited at the start of a long conversation is
+      // dropped first and every later call fails with "not referenced by the user"
+      // even though the user did cite it.
+      if (allowed.has(ref)) { allowed.delete(ref); allowed.add(ref); continue; }
       allowed.add(ref);
       changed = true;
     }
     if (!changed) return false;
     while (allowed.size > this.sessionSize) allowed.delete(allowed.values().next().value);
+    // Touch the session so a long-lived conversation is not evicted by newer ones.
+    if (this.sessions.has(sessionId)) { const current = this.sessions.get(sessionId); this.sessions.delete(sessionId); this.sessions.set(sessionId, current); }
     while (this.sessions.size > this.sessionLimit) this.sessions.delete(this.sessions.keys().next().value);
     await this.save();
     return true;

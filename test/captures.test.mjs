@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { CaptureStore } from "../src/captures.js";
+import { projectMcpResult } from "../src/apps/runtime.js";
 
 test("capture retention persists ownership and leaves legacy, unrelated and edited files alone", async t => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dsh-capture-retention-"));
@@ -33,4 +34,59 @@ test("capture retention removes expired owned files on the next capture", async 
   await writeFile(second, "second"); await store.record(second);
   assert.equal((await readdir(directory)).includes(path.basename(first)), false);
   assert.equal(await readFile(second, "utf8"), "second");
+});
+
+test("desktop and MCP screenshots obey the same retention as browser captures", async t => {
+  // The apps layer writes into the same captures directory. Without a shared
+  // store and the `dsh-capture-` prefix those files were never adopted or
+  // expired, so a screenshot:true loop grew the directory without bound.
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dsh-capture-mcp-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const store = new CaptureStore(directory, { maxFiles: 5 });
+  for (let index = 0; index < 20; index++) {
+    await projectMcpResult({ content: [{ type: "image", mimeType: "image/png", data: png }] }, directory, 8000, store);
+  }
+  const files = (await readdir(directory)).filter(name => name.endsWith(".png"));
+  assert.ok(files.length <= 5, `retention kept ${files.length} screenshots, expected at most 5`);
+  assert.ok(files.every(name => /^dsh-capture-[a-f0-9-]{36}\.png$/.test(name)),
+    "desktop captures must use the owned-capture name so the shared index adopts them");
+  await writeFile(path.join(directory, "personal.png"), "keep");
+  await projectMcpResult({ content: [{ type: "image", mimeType: "image/png", data: png }] }, directory, 8000, store);
+  assert.ok((await readdir(directory)).includes("personal.png"), "an unrelated file is never removed");
+});
+
+
+test("non-PNG captures are adopted after a restart instead of being orphaned", async t => {
+  // MCP/desktop screenshots are written as jpg or webp. The index must adopt every
+  // extension we actually produce, or a restart permanently disowns them and they
+  // grow without bound — exactly what retention exists to prevent.
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dsh-capture-ext-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const name = (id, ext) => `dsh-capture-00000000-0000-0000-0000-${String(id).padStart(12, "0")}.${ext}`;
+  for (const [id, ext] of [[1, "png"], [2, "jpg"], [3, "webp"]]) {
+    const file = path.join(directory, name(id, ext));
+    await writeFile(file, "capture");
+    await new CaptureStore(directory, { maxFiles: 10 }).record(file);
+  }
+  const fresh = path.join(directory, name(4, "png"));
+  await writeFile(fresh, "new");
+  await new CaptureStore(directory, { maxFiles: 0 }).record(fresh);
+  const left = (await readdir(directory)).filter(file => /\.(png|jpg|webp)$/.test(file));
+  assert.deepEqual(left, [], "every owned capture must be adoptable after a restart");
+});
+
+test("a capture that cannot be deleted does not wedge retention", async t => {
+  // A screenshot open in a viewer, or a locked profile path, makes unlink fail. That
+  // must not stop retention for the rest of the process.
+  const directory = await mkdtemp(path.join(os.tmpdir(), "dsh-capture-locked-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const name = id => `dsh-capture-00000000-0000-0000-0000-${String(id).padStart(12, "0")}.png`;
+  await mkdir(path.join(directory, name(1)), { recursive: true });
+  const store = new CaptureStore(directory, { maxFiles: 1 });
+  await store.record(path.join(directory, name(1))).catch(() => {});
+  const healthy = path.join(directory, name(2));
+  await writeFile(healthy, "ok");
+  await store.record(healthy);
+  assert.ok((await readdir(directory)).includes(name(2)), "a later healthy capture is still recorded");
 });

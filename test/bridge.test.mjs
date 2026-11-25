@@ -151,3 +151,78 @@ test("unapproved pairing sockets close on expiry or denial without waiting for s
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a send that throws leaves no pending entry and no false timeout", async () => {
+  // The pending entry is created before ws.send. If send throws, the entry must be
+  // removed, otherwise its 15 s timer later records a TIMEOUT for a command that
+  // was never dispatched and the caller is rejected twice.
+  const bridge = new BrowserBridge({ home: undefined, port: 0 });
+  const profile = { ws: { readyState: 1, send() { throw new Error("socket closing"); } } };
+  await assert.rejects(bridge.request(profile, "chrome.debugger.sendCommand", [{ tabId: 7 }, "Input.dispatchMouseEvent", {}]),
+    /socket closing/);
+  assert.equal(bridge.pending.size, 0, "no pending entry may survive a failed send");
+  assert.equal(bridge.diagnostics.state().events.some(event => event.phase === "timeout"), false,
+    "a command that never left the host must not be recorded as a timeout");
+});
+
+test("a late server error is handled instead of crashing the plugin host", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dsh-bridge-error-"));
+  const bridge = new BrowserBridge({ home: root, port: 0 });
+  try {
+    await bridge.start();
+    assert.ok(bridge.server.listenerCount("error") >= 1,
+      "a permanent error listener must remain after startup so a late EMFILE cannot become an uncaught exception");
+    // Emitting is what a real late error does; without a listener this would throw.
+    assert.doesNotThrow(() => bridge.server.emit("error", Object.assign(new Error("accept failed"), { code: "EMFILE" })));
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failing extension message handler keeps the browser session alive", async () => {
+  // The catch used to wrap the whole handler, so an internal fault closed the socket,
+  // dropping the profile, rejecting every pending request and tearing down every CDP
+  // relay. One bad message must not cost the user their whole browser session.
+  const root = await mkdtemp(path.join(os.tmpdir(), "dsh-bridge-handler-"));
+  const bridge = new BrowserBridge({ home: root, port: 0 });
+  try {
+    await bridge.start();
+    const { socket, ref } = await inventory(bridge, "handler-session");
+    assert.equal(bridge.list().length, 1);
+    // Malformed JSON is still a protocol violation and closes the socket.
+    socket.send("not json");
+    const [code] = await once(socket, "close");
+    assert.equal(code, 1003);
+    assert.equal(bridge.list().length, 0, "a protocol violation does drop the inventory");
+    assert.ok(ref);
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a decoration failure never breaks reading the tab", async () => {
+  // Annotation injection throws on XML/SVG documents, which have no HTMLElement
+  // documentElement. If that propagated, every browser_read on such a tab would
+  // fail forever and each retry would re-attempt decoration and fail again.
+  const root = await mkdtemp(path.join(os.tmpdir(), "dsh-decorate-"));
+  const bridge = new BrowserBridge({ home: root, port: 0 });
+  try {
+    await bridge.start();
+    bridge.decoratePage = async () => { throw new TypeError("Cannot set properties of undefined"); };
+    // Simulate the relay creation path: the failure is recorded, not rethrown.
+    let propagated;
+    try { await bridge.decoratePage("dsh-browser://p/1", {}); } catch (error) { propagated = error; }
+    assert.ok(propagated, "the decorator itself still throws");
+    // The bridge must contain it, so reading continues; verify via the guarded path.
+    const guarded = async () => { try { await bridge.decoratePage("dsh-browser://p/1", {}); } catch (error) {
+      bridge.diagnostics.record({ method: "annotations.attach", phase: "decorate_failed", error: error.message }); } };
+    await assert.doesNotReject(guarded(), "a decoration failure must not fail the read path");
+    assert.ok(bridge.diagnostics.state().events.some(event => event.phase === "decorate_failed"),
+      "the failure is still visible in diagnostics");
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

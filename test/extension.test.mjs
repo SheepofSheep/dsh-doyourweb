@@ -33,7 +33,7 @@ let uuidSequence = 0;
 
 function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, session = {}) {
   let load;
-  const sockets = [], timers = new Map(), detached = [], fetched = [], badges = [], alarms = new Map();
+  const sockets = [], timers = new Map(), detached = [], fetched = [], badges = [], titles = [], alarms = new Map();
   let sequence = 0;
   class Socket {
     static OPEN = 1;
@@ -49,7 +49,7 @@ function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, sessi
     tabs: { query: async () => tabs, get: async id => tabs.find(tab => tab.id === id),
       onUpdated: event(), onCreated: event(), onRemoved: event(), onActivated: event() },
     debugger: { onEvent: event(), onDetach: event(), attach: noop, getTargets: async () => [], sendCommand: async () => ({}), detach: async target => detached.push(target.tabId) },
-    action: { setBadgeText: async options => badges.push(options.text), setBadgeBackgroundColor: noop, setTitle: noop },
+    action: { setBadgeText: async options => badges.push(options.text), setBadgeBackgroundColor: noop, setTitle: async options => titles.push(options.title) },
     runtime: { onStartup: event(), onInstalled: event(), onMessage: event(), getManifest: () => ({ version: "0.2.3" }), getURL: path => `chrome-extension://test/${path}` },
     alarms: { onAlarm: event(), get: async name => alarms.get(name), create: async (name, value) => alarms.set(name, value) },
     storage: { local: { get: () => new Promise(resolve => { load = resolve; }),
@@ -67,7 +67,7 @@ function worker(stored = {}, tabs = [], code = bundle.outputFiles[0].text, sessi
       return new Response(Buffer.from("89504e470d0a1a0a", "hex"));
     },
   });
-  return { chrome, sockets, timers, detached, fetched, badges, alarms, stored, initialize: () => load(stored) };
+  return { chrome, sockets, timers, detached, fetched, badges, titles, alarms, stored, initialize: () => load(stored) };
 }
 
 test("worker restart reconciles only recorded debugger sessions owned by this extension", async () => {
@@ -246,7 +246,10 @@ test("an unpaired extension shows its code, stores the handed token, and reconne
   await pairing.onmessage({ data: JSON.stringify({ method: "dsh.pairing",
     params: { id: "abc12345", code: "4821", expiresAt: Date.now() + 60000, port: 43188 } }) });
   await flush();
-  assert.equal(running.badges.at(-1), "4821", "the badge carries the code the user compares");
+  // A badge holds ~4 characters, so a 6-digit code is shown in the popup and the
+  // tooltip; rendering a truncated prefix would defeat the comparison.
+  assert.equal(running.badges.at(-1), "PAIR", "the badge signals pairing without truncating the code");
+  assert.match(running.titles.at(-1) ?? "", /4821/, "the tooltip carries the full code the user compares");
   const listener = running.chrome.runtime.onMessage.listeners[0];
   const status = await new Promise(resolve => listener({ type: "status" }, {}, resolve));
   assert.equal(status.paired, false);

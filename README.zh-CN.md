@@ -4,7 +4,7 @@
 
 让 DeepSeek Harness 引用并操作你已经打开、保持登录的 Chrome 和 Edge 页面，用精简的页面上下文和批量操作减少重复读取。
 
-`0.2.4` 从 DSH 签发浏览器配对和应用管理的批准链接。扩展菜单可停止当前标签的操作，包括导航后的验证。应用控制实时检查所选窗口，并在批准前锁定 npm 连接器依赖。通过扩展菜单可开启或恢复页面批注。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
+`0.2.5` 修复浏览器侧栏空白的面板回归，增强配对与桥接错误处理，并修正批注、截图、应用安装和会话授权的若干边界问题。用法见[浏览器工作流与诊断](docs/browser-workflow.md)、[架构优化说明](docs/architecture-optimization.md)和[批注与应用控制](docs/annotations-and-apps.md)。
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -27,12 +27,12 @@
 
 项目由 DSH 插件和配套的 Manifest V3 浏览器扩展组成。插件接入原生 `@`、`/` 菜单，扩展提供标签页信息和控制通道。完成一次配对后，扩展会在后台重连，不必一直打开弹窗。
 
-当前版本为 **0.2.4**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
+当前版本为 **0.2.5**，包和浏览器扩展版本一致，变更见[更新记录](CHANGELOG.md)。
 
 ## 02 · 功能预览
 
 1. 在 DSH 输入 `/browser`，打开连接页面并查看扩展目录。
-2. 在 Chrome 或 Edge 加载扩展，核对并批准四位配对码。
+2. 在 Chrome 或 Edge 加载扩展，核对并批准六位配对码。
 3. 点左导航“浏览器”，或使用 `@`，将已打开页面加入当前会话草稿，写好任务后再发送。
 
 ![新版页面批注浮窗](docs/annotation-toolbar.png)
@@ -145,7 +145,7 @@ dsh-doyourweb
 ### 构建并安装本地版本
 
 ```sh
-git clone --branch ver0.2.4 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.5 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -163,7 +163,7 @@ npm run build
 
 1. 在 DSH 输入 `/browser`，打开本地连接页面。
 2. 打开 `edge://extensions` 或 `chrome://extensions`，开启开发者模式，将项目中的 `extension/` 目录作为解压后的扩展加载。
-3. 核对扩展徽标上的四位码与连接页面中的待配对请求，然后批准。
+3. 核对扩展弹窗中的六位码与连接页面中的待配对请求，然后批准。
 4. 回到 DSH，用 `@` 选择标签页并发送任务。
 
 配对页面和扩展弹窗都可以关闭。安装 DSH 插件不会自动安装浏览器扩展。

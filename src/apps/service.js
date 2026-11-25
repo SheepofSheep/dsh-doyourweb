@@ -5,6 +5,7 @@ import { AppInventory, AppUnavailable, findExecutable } from "./processes.js";
 import { ConnectorCatalog, fingerprint, validateConnector } from "./catalog.js";
 import { desktopCandidate, preparePackage, installConnector } from "./install.js";
 import { McpConnection, runProcess, projectMcpResult, UncertainOperation } from "./runtime.js";
+import { CaptureStore } from "../captures.js";
 import { clip } from "../output.js";
 import { mouseSteps } from "./mouse.js";
 import { AppIcons } from "./icons.js";
@@ -25,6 +26,9 @@ export class Applications {
     this.plans = new Map(); this.connections = new Map(); this.candidates = new Map(); this.receipts = new Map(); this.snapshots = new Map(); this.queue = Promise.resolve(); this.writes = Promise.resolve(); this.lifetime = new AbortController(); this.jobs = new Set(); this.closed = false;
     this.revisions = new Map();
     this.scopedRevisions = new Map(); this.activePlans = new Set();
+    // Desktop/MCP screenshots land in the same directory as browser captures, so
+    // they share one retention policy instead of growing without bound.
+    this.captureStore = new CaptureStore(path.join(home, "captures"));
   }
   async load() {
     try {
@@ -261,7 +265,7 @@ export class Applications {
       } else {
         if (!inspect) this.invalidateSnapshots(ref);
         const raw = await c.transport.call(options.tool, options.arguments || {}, { signal: execution.signal, timeout: options.timeout || 30000 });
-        result = await projectMcpResult(raw, path.join(this.home, "captures"), options.limit || 8000);
+        result = await projectMcpResult(raw, path.join(this.home, "captures"), options.limit || 8000, this.captureStore);
         if (raw.isError && !inspect) this.receipts.set(ref, { kind: "mcp", connection: c.id, tool: options.tool, mayHaveEffects: true });
         // Only a call made against this same MCP connection may clear its own
         // receipt; a desktop/CLI receipt needs a real desktop or CLI read.
@@ -385,7 +389,7 @@ export class Applications {
           const remaining = deadline - Date.now();
           if (remaining <= 0) throw new UncertainOperation("Desktop batch deadline reached; inspect completed effects before continuing");
           const raw = await c.transport.call(tool, args, { signal: execution.signal, timeout: remaining });
-          const result = await projectMcpResult(raw, path.join(this.home, "captures"), Math.floor((options.limit || 8000) / prepared.length));
+          const result = await projectMcpResult(raw, path.join(this.home, "captures"), Math.floor((options.limit || 8000) / prepared.length), this.captureStore);
           if (reading) {
             if (raw.isError) { this.invalidateSnapshots(ref); return { app: ref, status: "read_failed", stop: true, retryable: false, result, message: "Window inspection failed. Do not keep searching or taking screenshots; use a background connector or inspect the automatic launch with computer use." }; }
             const signature = createHash("sha256").update(JSON.stringify(raw)).digest("hex");
@@ -425,7 +429,7 @@ export class Applications {
           for (const [name, value] of Object.entries({ include_screenshot: false, include_accessibility_tree: true, max_elements: 150, max_depth: 8 })) if (properties[name]) args[name] = value;
           const raw = await c.transport.call(tool, args, { signal: execution.signal, timeout: Math.max(1, deadline - Date.now()) });
           if (raw.isError) throw new UncertainOperation("Inputs were sent but the expectation read failed; inspect once before another input");
-          const data = driverData(raw), result = await projectMcpResult(raw, path.join(this.home, "captures"), options.limit || 2400);
+          const data = driverData(raw), result = await projectMcpResult(raw, path.join(this.home, "captures"), options.limit || 2400, this.captureStore);
           const matched = (data.elements || []).some(e => (!options.expect.role || e.role === options.expect.role) && (!options.expect.name || e.label === options.expect.name)
             && (options.expect.value === undefined || e.value === options.expect.value));
           observation = { snapshot: randomUUID(), snapshot_id: data.snapshot_id ?? null, matched, result };

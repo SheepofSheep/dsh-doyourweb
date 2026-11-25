@@ -85,7 +85,11 @@ export class Annotations {
     if (value.screenshot) {
       const r = item.rect;
       if (r.width < 1 || r.height < 1 || r.width * r.height > 16000000) throw new Error("Selected area is empty or too large");
-      const bytes = await page.screenshot({ clip: { x: r.x + r.scrollX, y: r.y + r.scrollY, width: r.width, height: r.height } });
+      // `rect` is captured with getBoundingClientRect, so it is already in viewport
+      // coordinates. A non-fullPage screenshot clips in that same space; adding the
+      // scroll offsets would move the clip onto unrelated content whenever the page
+      // is scrolled.
+      const bytes = await page.screenshot({ clip: { x: r.x, y: r.y, width: r.width, height: r.height } });
       content.push({ type: "image", mediaType: "image/png", data: bytes.toString("base64"), name: "页面批注.png" });
     }
     const requestId = /^[a-f0-9-]{36}$/i.test(value.requestId || "") ? value.requestId : randomUUID();

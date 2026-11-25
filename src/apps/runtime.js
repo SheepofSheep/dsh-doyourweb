@@ -3,13 +3,17 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import Ajv from "ajv";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { clip } from "../output.js";
 import { driverData, controlPage } from "./desktop.js";
+
+// One source of truth for the version reported to MCP servers. A hardcoded literal
+// here drifted from package.json and made the client identity lie.
+const PACKAGE_VERSION = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")).version;
 
 export class UncertainOperation extends Error {
   constructor(message, cause) { super(message, { cause }); this.mayHaveEffects = true; }
@@ -77,7 +81,7 @@ export function runProcess(command, args = [], { cwd, env, signal, timeout = 300
 }
 
 export class McpConnection {
-  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: "0.2.4" }); }
+  constructor(candidate) { this.candidate = candidate; this.tools = new Map(); this.validators = new Map(); this.client = new Client({ name: "dsh-doyourweb", version: PACKAGE_VERSION }); }
   async connect(signal) {
     const c = this.candidate;
     if (c.url) this.transport = new StreamableHTTPClientTransport(new URL(c.url), { requestInit: { headers: c.headers || {}, redirect: "error" } });
@@ -137,7 +141,7 @@ export class McpConnection {
   async close() { await this.client.close().catch(() => {}); }
 }
 
-export async function projectMcpResult(result, captures, limit = 8000) {
+export async function projectMcpResult(result, captures, limit = 8000, store) {
   const output = { isError: !!result.isError, content: [], untrusted: true };
   const data = driverData(result);
   const hasControls = Array.isArray(data.elements) || typeof data.snapshot_id === "string";
@@ -165,8 +169,12 @@ export async function projectMcpResult(result, captures, limit = 8000) {
     } else if (block.type === "image" && ["image/png", "image/jpeg", "image/webp"].includes(block.mimeType)) {
       if (typeof block.data !== "string" || block.data.length > 16 * 1024 * 1024) throw new Error("MCP screenshot exceeds image size limit");
       await mkdir(captures, { recursive: true });
-      const file = path.join(captures, `${randomUUID()}.${block.mimeType === "image/png" ? "png" : block.mimeType === "image/jpeg" ? "jpg" : "webp"}`);
+      // The browser path names its files `dsh-capture-<uuid>.png` so the shared
+      // retention index can recognise ownership. Desktop screenshots must use the
+      // same prefix, or CaptureStore refuses to adopt or expire them.
+      const file = path.join(captures, `dsh-capture-${randomUUID()}.${block.mimeType === "image/png" ? "png" : block.mimeType === "image/jpeg" ? "jpg" : "webp"}`);
       await writeFile(file, Buffer.from(block.data, "base64"), { mode: 0o600 });
+      await store?.record(file).catch(() => {});
       output.content.push({ type: "image", path: file, mimeType: block.mimeType });
     } else if (block.type === "resource_link") output.content.push({ type: "resource", name: clip(block.name || "", 100), uri: clip(block.uri || "", 1000) });
   }

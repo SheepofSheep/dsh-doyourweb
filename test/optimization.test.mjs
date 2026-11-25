@@ -93,15 +93,59 @@ test("an idle relay release keeps the uncertain-effect receipt for later inspect
 });
 
 test("the configured snapshot budget also bounds action receipts", async () => {
-  const page = { evaluate: async () => ({ url: "https://example.com", epoch: 1 }), title: async () => "Budget",
-    locator: () => ({ ariaSnapshot: async () => "- button \"Go\" [ref=e1]\n" + "x".repeat(9000), click: async () => {} }) };
-  const engine = new BrowserEngine({ page: async () => page }, { snapshotChars: 600 });
-  // A snapshot is single-use, so each action needs its own read.
+  // A twelve-step batch plus a long failure message exceeds the smallest budget the
+  // plugin accepts (400). The receipt must be trimmed rather than returned over the
+  // budget the caller configured. A short batch would satisfy a `<= 400` assertion
+  // trivially, so the batch is deliberately at the 12-step cap and the last step
+  // fails with a 400-character message.
+  const makePage = () => {
+    let clicks = 0;
+    return { evaluate: async () => ({ url: "https://example.com", epoch: 1 }),
+      title: async () => "Budget", url: () => "https://example.com",
+      locator: () => ({ ariaSnapshot: async () => "- button \"Go\" [ref=e1]",
+        click: async () => { clicks++; if (clicks > 11) throw new Error("E".repeat(400)); } }) };
+  };
+  const engine = new BrowserEngine({ page: async () => makePage() }, { snapshotChars: 400 });
+
   const read = await engine.read("tab");
-  const acted = await engine.act("tab", { snapshot: read.snapshot, steps: [{ op: "click", ref: "e1" }] });
-  assert.ok(acted.content.length <= 600, `post-action chunk ${acted.content.length} exceeded the 600 budget`);
-  // `summary` skips the trailing snapshot, so this receipt is bounded by boundAction.
+  const steps = Array.from({ length: 12 }, () => ({ op: "click", ref: "e1" }));
+  const summary = await engine.act("tab", { snapshot: read.snapshot, observe: "summary", steps });
+  const size = JSON.stringify(summary).length;
+  assert.ok(size <= 400, `receipt ${size} characters exceeded the 400 budget`);
+  assert.ok(summary.completedTruncated, "fitting 400 characters requires trimming, and the trim must be observable");
+
+  // The post-action snapshot is bounded by the same budget.
   const again = await engine.read("tab");
-  const summary = await engine.act("tab", { snapshot: again.snapshot, observe: "summary", steps: [{ op: "click", ref: "e1" }] });
-  assert.ok(JSON.stringify(summary).length <= 600, `receipt ${JSON.stringify(summary).length} exceeded the 600 budget`);
+  const acted = await engine.act("tab", { snapshot: again.snapshot, steps: [{ op: "click", ref: "e1" }] });
+  assert.ok(acted.content.length <= 400, `post-action chunk ${acted.content.length} exceeded the 400 budget`);
+});
+
+
+test("a rejected retry never erases an uncertain or cancelled receipt", async () => {
+  // A preflight rejection dispatches nothing, so it may replace only a receipt that
+  // also records no dispatch. Overwriting an uncertain one would tell the model
+  // "nothing was dispatched" and let it replay an action that already landed.
+  let clicks = 0, failAfterClick = false;
+  const page = { evaluate: async () => ({ epoch: 1, url: "https://example.com" }),
+    title: async () => "Receipt", url: () => "https://example.com",
+    locator: () => ({ ariaSnapshot: async () => '- button "Go" [ref=e1]',
+      click: async () => { clicks++; if (failAfterClick) throw new Error("post-click failure"); } }) };
+  const engine = new BrowserEngine({ page: async () => page });
+
+  const read = await engine.read("tab");
+  failAfterClick = true;
+  const first = await engine.act("tab", { snapshot: read.snapshot, observe: "summary", steps: [{ op: "click", ref: "e1" }] });
+  assert.equal(first.mayHaveLateEffects, true);
+  assert.equal(clicks, 1, "the click was dispatched before the failure");
+
+  // The model follows the receipt, reads again, and retries with a preflight error.
+  failAfterClick = false;
+  const again = await engine.read("tab");
+  await assert.rejects(engine.act("tab", { snapshot: again.snapshot, observe: "summary",
+    steps: [{ op: "upload", selector: "input", files: ["relative/not/absolute.txt"] }] }), /absolute local files/);
+
+  const kept = engine.receipts.get("tab");
+  assert.equal(kept?.mayHaveLateEffects, true,
+    "the uncertain evidence must survive so the model cannot replay the click");
+  assert.equal(clicks, 1, "no second dispatch happened");
 });

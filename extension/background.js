@@ -203,8 +203,10 @@ async function updateStatus() {
     : pairing ? `\u914d\u5bf9\u4e2d \u00b7 ${pairing.code}`
       : !token ? "\u672a\u914d\u5bf9" : connected ? "\u5df2\u8fde\u63a5" : "\u7b49\u5f85 DSH";
   await chrome.action.setTitle({ title: `DSH DoYourWeb - ${title}` });
-  // While unpaired the badge is the code the user compares with the DSH setup page.
-  await chrome.action.setBadgeText({ text: pairing ? pairing.code : connected || stopped ? "" : "OFF" });
+  // A badge holds about four characters, so a six-digit code is shown in the
+  // popup and the tooltip instead. Rendering it truncated would make the user
+  // compare a prefix and defeat the point of the code.
+  await chrome.action.setBadgeText({ text: pairing ? "PAIR" : connected || stopped ? "" : "OFF" });
   await chrome.action.setBadgeBackgroundColor({ color: pairing ? "#b45309" : "#6b7280" });
 }
 

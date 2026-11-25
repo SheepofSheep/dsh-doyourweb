@@ -110,7 +110,10 @@ export async function installConnector(candidate, home, signal, { run = runProce
     const unpack = path.join(directory, `binary-${randomUUID()}`); await mkdir(unpack, { recursive: true });
     if (platform === "windows") {
       const payload = Buffer.from(JSON.stringify({ archive, unpack }), "utf8").toString("base64");
-      const script = `$ErrorActionPreference='Stop';Add-Type -AssemblyName System.IO.Compression.FileSystem;$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json;[IO.Compression.ZipFile]::ExtractToDirectory($p.archive,$p.unpack)`;
+      // ZipFile.ExtractToDirectory on .NET Framework (Windows PowerShell 5.1) does
+      // not reject `..` entries, so every entry is resolved and checked against the
+      // destination first — the same guarantee the tar branch below already makes.
+      const script = `$ErrorActionPreference='Stop';Add-Type -AssemblyName System.IO.Compression.FileSystem;$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json;$root=[IO.Path]::GetFullPath($p.unpack).TrimEnd([IO.Path]::DirectorySeparatorChar)+[IO.Path]::DirectorySeparatorChar;$zip=[IO.Compression.ZipFile]::OpenRead($p.archive);try{foreach($entry in $zip.Entries){$target=[IO.Path]::GetFullPath([IO.Path]::Combine($p.unpack,$entry.FullName));if(-not $target.StartsWith($root,[StringComparison]::OrdinalIgnoreCase)){throw "Unsafe driver archive path: $($entry.FullName)"}}}finally{$zip.Dispose()};[IO.Compression.ZipFile]::ExtractToDirectory($p.archive,$p.unpack)`;
       const result = await runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { signal, timeout: 30000 });
       if (result.exitCode !== 0) throw new Error(`Driver archive extraction failed: ${result.stderr}`);
     } else {

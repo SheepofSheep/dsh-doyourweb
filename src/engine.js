@@ -81,6 +81,20 @@ function boundAction(result, cap = 1400) {
     }
     entry.rows.pop(); entry.omittedRows++; entry.truncated = true;
   }
+  // `completed` has no per-item cost to trade away: a twelve-step batch is ~370
+  // characters on its own, which alone can exceed a small budget. Collapse it to a
+  // count rather than returning a receipt over the budget the caller configured.
+  if (Array.isArray(result.completed) && result.completed.length) {
+    while (serialize(result).length > budget && result.completed.length > 1) {
+      result.completed.pop();
+      result.completedTruncated = true;
+    }
+    if (serialize(result).length > budget) {
+      result.completedCount = result.completed.length;
+      result.completed = [];
+      result.completedTruncated = true;
+    }
+  }
   return result;
 }
 
@@ -242,8 +256,17 @@ export class BrowserEngine {
           uploads.set(index, files);
         }
       } catch (error) {
-        // A stale retry must not erase the batch whose effects still need inspection.
-        if (!this.receipts.has(ref) || state?.id === options.snapshot) this.receipts.set(ref,
+        // A rejected retry must never destroy the evidence of a batch that may have
+        // dispatched something. A preflight failure dispatches nothing, so it may
+        // only replace a receipt that also records no dispatch; otherwise the model
+        // would be told "nothing was dispatched" and could replay an action that
+        // already landed, or lose the completed steps of a cancelled batch.
+        const existing = this.receipts.get(ref);
+        const dispatched = !!existing && (existing.mayHaveLateEffects === true
+          || existing.cancelled === true
+          || (Array.isArray(existing.completed) && existing.completed.length > 0)
+          || (existing.failure !== undefined && existing.failure.dispatch !== "none"));
+        if (!dispatched) this.receipts.set(ref,
           { actionId, snapshot: options.snapshot, completed: [], dispatch: "none", rejected: true });
         throw error;
       }
@@ -365,7 +388,7 @@ export class BrowserEngine {
         ...(failure ? { failure, retry: "Read current state first. Do not replay completed or uncertain actions." } : {}),
         ...(navigated ? { navigated: true, stopped: "Navigation occurred; read the new page before remaining actions." } : {}),
         ...(cancelled ? { cancelled: true } : {}),
-        ...(uncertainStep !== undefined ? { uncertainStep, mayHaveLateEffects: true } : {}) });
+        ...(uncertainStep !== undefined ? { uncertainStep, mayHaveLateEffects: true } : {}) }, budget);
       const receipt = { actionId, snapshot: state.id, completed: completed.map(step => step.index),
         ...(failure ? { failure: { index: failure.index, dispatch: failure.dispatch, ...(failure.phase ? { phase: failure.phase } : {}) } } : {}),
         ...(cancelled ? { cancelled: true } : {}),

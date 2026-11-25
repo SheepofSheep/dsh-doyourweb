@@ -32,7 +32,13 @@ export class LocalApproval {
   }
   permits(key, scope) {
     this.prune();
-    return typeof key === "string" && this.sessions.get(key)?.scope === scope;
+    const session = this.sessions.get(key);
+    if (typeof key !== "string" || session?.scope !== scope) return false;
+    // Refresh on use so an actively-used tab is not evicted by a burst of newer
+    // sessions; eviction then costs the least recently used session, not an open one.
+    this.sessions.delete(key);
+    this.sessions.set(key, session);
+    return true;
   }
   close() { this.invitations.clear(); this.sessions.clear(); }
 }

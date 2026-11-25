@@ -2,7 +2,7 @@
 
 Reference and control your existing, logged-in Chrome and Edge tabs from DeepSeek Harness, with compact page context and batched browser actions.
 
-Version `0.2.4` adds authenticated approval links for browser pairing and app management. The extension menu can stop actions in the current tab, including verification after navigation. App control uses live checks of the selected window and locks npm connector dependencies before approval. Start or resume page annotations from the extension menu. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
+Version `0.2.5` fixes the browser sidebar blank-panel regression, strengthens pairing and bridge error handling, and corrects several annotation, capture, app installation and authorization edge cases. See [browser workflow and diagnostics](docs/browser-workflow.md#english), [optimization decisions](docs/architecture-optimization.md#english) and [app control](docs/annotations-and-apps.md#english).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/SheepofSheep/dsh-doyourweb/ci.yml?branch=main&label=CI)](https://github.com/SheepofSheep/dsh-doyourweb/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -25,12 +25,12 @@ Browser tasks often depend on pages you have already opened and accounts you hav
 
 The project has two parts: a DSH plugin and a companion Manifest V3 extension. The plugin adds browser references to the native `@` and `/` menus; the extension supplies tab metadata and browser control. Once paired, the extension reconnects in the background without keeping its popup open.
 
-Current version: **0.2.4** for both the package and browser extension. See the [changelog](CHANGELOG.md).
+Current version: **0.2.5** for both the package and browser extension. See the [changelog](CHANGELOG.md).
 
 ## 02 · Preview
 
 1. Use `/browser` to open the connection page and locate the extension folder.
-2. Load the extension in Chrome or Edge, then approve its matching four-digit pairing code.
+2. Load the extension in Chrome or Edge, then approve its matching six-digit pairing code.
 3. Open **Browser** from the left navigation, or use `@`, to add an existing page to the current chat draft. Send the draft when ready.
 
 ![Current page annotation toolbar](docs/annotation-toolbar.png)
@@ -142,7 +142,7 @@ This requires a published package. If the registry returns `404`, use the local 
 ### Build and Install Locally
 
 ```sh
-git clone --branch ver0.2.4 https://github.com/SheepofSheep/dsh-doyourweb.git
+git clone --branch ver0.2.5 https://github.com/SheepofSheep/dsh-doyourweb.git
 cd dsh-doyourweb
 npm ci
 npm run build
@@ -160,7 +160,7 @@ If both the navigation entry and `/browser` candidate are missing, check that th
 
 1. Enter `/browser` in DSH and open the local connection page.
 2. Open `edge://extensions` or `chrome://extensions`, enable developer mode, and load the project's `extension/` folder as an unpacked extension.
-3. Compare the extension's four-digit badge code with the pending request on the connection page, then approve it.
+3. Compare the extension popup's six-digit code with the pending request on the connection page, then approve it.
 4. Return to DSH, select a tab with `@`, and send your request.
 
 The extension popup and pairing page do not need to remain open. Installing the DSH plugin does not install the browser extension automatically.

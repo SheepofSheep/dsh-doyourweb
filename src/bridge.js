@@ -94,11 +94,23 @@ export class BrowserBridge extends EventEmitter {
       }
     });
     await new Promise((resolve, reject) => {
-      this.server.once("error", reject);
-      this.server.listen(this.port, "127.0.0.1", resolve);
+      // `once` is removed on success: left attached, the first post-startup server
+      // error (for example EMFILE on accept) would settle an already-settled
+      // promise and silently detach, so the *next* error would be unhandled and
+      // crash the plugin host.
+      const failed = error => { this.server.off("listening", listening); reject(error); };
+      const listening = () => { this.server.off("error", failed); resolve(); };
+      this.server.once("error", failed);
+      this.server.once("listening", listening);
+      this.server.listen(this.port, "127.0.0.1");
     }).catch(error => {
       if (error.code !== "EADDRINUSE") throw error;
       throw new Error(`Browser bridge port ${this.port} is already in use. Another DSH instance, another application, or a bridge leaked by an older plugin version owns it; stop that instance or set a different "port" in the plugin settings.`);
+    });
+    // A permanent listener keeps a late server error from becoming an uncaught
+    // exception; the bridge stays usable and the failure is visible in diagnostics.
+    this.server.on("error", error => {
+      this.diagnostics.record({ method: "bridge", phase: "server_error", error: error.message });
     });
     this.port = this.server.address().port;
     this.url = `http://127.0.0.1:${this.port}/setup`;
@@ -209,7 +221,7 @@ export class BrowserBridge extends EventEmitter {
     const body = `<main><header><div class="mark" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a16 16 0 0 1 0 18 16 16 0 0 1 0-18"/></svg></div><div><h1>连接你的浏览器</h1><p class="product">DSH DoYourWeb · 本机连接</p></div><span role="status" class="badge ${connected ? "online" : ""}">${connected ? "已连接" : pending.length ? "待确认" : "等待连接"}</span></header>
       <p class="intro">让聊天接着你的网页工作。保留登录状态，在对话中用 @ 选择页面。</p>
       ${connected ? `<section class="success"><h2>连接已就绪</h2><p>回到 DSH，在输入框键入 <kbd>@</kbd>，选择需要使用的标签页。</p><p class="hint">已连接 ${this.profiles.size} 个浏览器配置。需要标注页面时，打开扩展并点击「批注当前页面」。</p></section><details><summary>连接另一个浏览器</summary>${install}</details>` : `<section class="card">${pending.length ? `<details><summary>扩展已发来请求 · 查看安装步骤</summary>${install}</details>` : install}</section>`}
-      ${!connected || requests ? `<section class="card step"><span class="number">2</span><div><h2>核对验证码，确认连接</h2><p>与扩展弹窗中的 4 位验证码一致后，点击允许。</p>${requests ? `<ul class="requests">${requests}</ul>` : `<div class="waiting"><span class="dot"></span>等待扩展发来请求…</div><p class="hint">安装后会自动出现，无需手动输入验证码。</p>`}</div></section>` : ""}
+      ${!connected || requests ? `<section class="card step"><span class="number">2</span><div><h2>核对验证码，确认连接</h2><p>与扩展弹窗中的 6 位验证码一致后，点击允许。每个验证码只属于一个请求。</p>${requests ? `<ul class="requests">${requests}</ul>` : `<div class="waiting"><span class="dot"></span>等待扩展发来请求…</div><p class="hint">安装后会自动出现，无需手动输入验证码。</p>`}</div></section>` : ""}
       <details class="help"><summary>连接帮助与本地 HTML</summary><p>浏览器限制网页直接打开扩展管理页，请复制地址后粘贴到地址栏。</p><p>如果扩展显示 OFF，请打开扩展弹窗，检查连接开关，并在「连接设置」将端口设为 <code>${this.port}</code>。</p><p>本地 HTML：在扩展详情中开启「允许访问文件网址」，再用 @ 选择已打开的文件标签页。</p><p>扩展只连接本机，不读取 Cookie；只有在对话中引用的页面才允许操作。</p></details>
       <p id="approval-status" role="status">批准连接前，请从 DSH 的 /browser 菜单打开本页。</p>
       <footer><span>DSH DoYourWeb · 本机连接</span><a href="/setup">刷新状态</a></footer></main>`;
@@ -258,8 +270,14 @@ export class BrowserBridge extends EventEmitter {
     let profile;
     ws.on("error", () => {});
     ws.on("message", raw => {
+      let data;
+      // A parse failure is a protocol violation from the extension and closes the
+      // socket. An internal fault in one handler must NOT: closing here would drop
+      // the profile, reject every pending request and tear down every CDP relay,
+      // costing the user their whole browser session over one bad message.
+      try { data = JSON.parse(raw.toString()); }
+      catch { ws.close(1003, "Invalid bridge message"); return; }
       try {
-        const data = JSON.parse(raw.toString());
         if (data.method === "dsh.inventory") {
           const info = data.params;
           if (!/^[a-z0-9-]{1,80}$/i.test(info.profile) || !Array.isArray(info.tabs)
@@ -336,7 +354,11 @@ export class BrowserBridge extends EventEmitter {
             if (relay.profile === profile && relay.tabId === data.params[0].tabId) this.dropRelay(relay);
           }
         } else if (data.method === "dsh.ping") ws.send(JSON.stringify({ method: "dsh.pong", params: { version: this.diagnostics.version, protocolRevision: bridgeProtocolRevision } }));
-      } catch { ws.close(1003, "Invalid bridge message"); }
+      } catch (error) {
+        // Keep the connection: one malformed or failing message must not end the
+        // user's browser session. Record it so the failure is still diagnosable.
+        this.diagnostics.record({ method: "extension_message", phase: "handler_error", error: error?.message || String(error) });
+      }
     });
     ws.on("close", () => {
       if (profile && this.profiles.get(profile.id) === profile) this.profiles.delete(profile.id);
@@ -363,7 +385,16 @@ export class BrowserBridge extends EventEmitter {
         reject(new Error(`Browser command timed out: ${command} (request ${id})`));
       }, 15000);
       this.pending.set(id, { resolve, reject, timer, ws: profile.ws, method: command, started });
-      profile.ws.send(JSON.stringify({ id, method, params, diagnostics: this.diagnostics.enabled }));
+      try { profile.ws.send(JSON.stringify({ id, method, params, diagnostics: this.diagnostics.enabled })); }
+      catch (error) {
+        // A send that throws delivers nothing, so the entry must not stay pending:
+        // its 15 s timer would later record a TIMEOUT for a command that was never
+        // dispatched, and the caller would be rejected twice.
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+        return;
+      }
       if (method === "chrome.debugger.sendCommand") this.emit("commandSent", tabRef(profile.id, params[0].tabId), command);
     });
   }
@@ -408,7 +439,11 @@ export class BrowserBridge extends EventEmitter {
       if (!page) throw new Error("Browser did not expose the referenced tab");
       page.setDefaultTimeout(8000);
       page.setDefaultNavigationTimeout(12000);
-      await this.decoratePage?.(ref, page);
+      // Annotation is an optional extra, never a precondition for reading a tab.
+      // An XML/SVG document has no HTMLElement documentElement, so injection throws;
+      // letting that propagate would make every browser_read on that tab fail forever.
+      try { await this.decoratePage?.(ref, page); }
+      catch (error) { this.diagnostics.record({ method: "annotations.attach", phase: "decorate_failed", error: error?.message || String(error) }); }
       this.diagnostics.record({ id: connectionId, method: "connectOverCDP", phase: "connect_ready", elapsedMs: Date.now() - started });
       return page;
     }).catch(error => {
@@ -484,7 +519,12 @@ export class BrowserBridge extends EventEmitter {
   async close() {
     this.approval.close();
     for (const relay of [...this.relays.values()]) this.dropRelay(relay);
-    await Promise.all(this.detachments.values());
+    // Teardown must not inherit the 15 s command timeout: a throttled MV3 worker
+    // would otherwise hold plugin unload (and the bridge port) for that long.
+    await Promise.race([
+      Promise.all(this.detachments.values()),
+      new Promise(resolve => { const timer = setTimeout(resolve, 1500); timer.unref?.(); }),
+    ]);
     for (const client of this.ws?.clients || []) client.close();
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(new Error("Bridge stopped")); }
     this.pending.clear();

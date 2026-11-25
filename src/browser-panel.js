@@ -25,7 +25,6 @@ export function BrowserGlyph({ kind = "app", size = 16, ...props }) {
 
 export function ObjectIcon({ src, app = false, size = 18 }) {
   const [failed, setFailed] = useState(false);
-  const [authorizationSession, setAuthorizationSession] = useState();
   useEffect(() => setFailed(false), [src]);
   return src && !failed ? h("img", { src, width: size, height: size, alt: "", style: { display: "block", objectFit: "contain" }, onError: () => setFailed(true) })
     : app ? h(BrowserGlyph, { size }) : h(IconGlobeOutlineRegular, { size });
@@ -56,6 +55,7 @@ export function BrowserPanel({ service, conversation, sessionId, watchTabs }) {
   const [failed, setFailed] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [search, setSearch] = useState("");
+  const [authorizationSession, setAuthorizationSession] = useState();
   useEffect(() => {
     const timer = setTimeout(() => setSearch(query), 200);
     return () => clearTimeout(timer);

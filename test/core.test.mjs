@@ -113,7 +113,8 @@ test("pairing hands the token only to the request the user approved", async () =
     bridge.acceptPairing(socket);
     const challenge = sent[0];
     assert.equal(challenge.method, "dsh.pairing");
-    assert.match(challenge.params.code, /^[0-9]{4}$/);
+    assert.match(challenge.params.code, /^[0-9]{6}$/,
+      "the code must be wide enough that guessing it is not viable at the request rate the bridge accepts");
     assert.equal(challenge.params.port, bridge.port);
     assert.equal(bridge.pairings.list().length, 1);
     // Denying or approving a stale id must not hand out the token.
@@ -547,3 +548,54 @@ test("an offline browser or failed RPC exposes setup instead of an empty menu", 
   } finally { globalThis.window = originalWindow; }
 });
 
+
+test("re-citing a tab refreshes its grant so a long conversation does not lose it", async () => {
+  // Eviction is by insertion order. Without the refresh, a tab cited at the start
+  // of a long conversation is dropped first and every later call fails with
+  // "not referenced by the user" even though the user did cite it.
+  const grants = new Grants({ file: undefined, perSession: 3 });
+  const first = "dsh-browser://p/1";
+  await grants.allow("s", [first]);
+  await grants.allow("s", ["dsh-browser://p/2", "dsh-browser://p/3"]);
+  await grants.allow("s", [first]);
+  await grants.allow("s", ["dsh-browser://p/4"]);
+  const kept = [...grants.get("s")];
+  assert.ok(kept.includes(first), "a re-cited tab must survive eviction");
+  assert.equal(kept.includes("dsh-browser://p/2"), false, "the least recently cited tab is evicted instead");
+  assert.ok(kept.length <= 3, "the per-session cap still holds");
+});
+
+test("pairing codes are unique among pending requests and request minting is rate-limited", () => {
+  // A four-digit code is not a secret: the space is 10,000 and a local process can
+  // open thousands of requests per second, so a colliding code would let an
+  // impostor's row look identical to the real extension's on /setup. The code is
+  // now unique per pending request, wider, and minting is rate-limited.
+  const pairings = new Pairings();
+  const sockets = Array.from({ length: 4 }, () => ({ close: () => {} }));
+  const entries = sockets.map(socket => pairings.request(socket));
+  assert.equal(entries.every(Boolean), true, "the pending pool still admits its configured size");
+  const codes = entries.map(entry => entry.code);
+  assert.equal(new Set(codes).size, codes.length, "no two pending requests may share a code");
+  for (const code of codes) assert.match(code, /^[0-9]{6}$/);
+  // Enumeration is bounded even though the pending pool is saturated and cycling.
+  let refused = 0;
+  for (let index = 0; index < 200; index++) {
+    const entry = pairings.request({ close: () => {} });
+    if (!entry) refused++;
+    else pairings.take(entry.id);
+  }
+  assert.ok(refused > 0, "minting must be rate-limited so codes cannot be enumerated at thousands per second");
+});
+
+test("an impostor cannot obtain the code the real extension is showing", () => {
+  const pairings = new Pairings();
+  const real = pairings.request({ close: () => {} });
+  // Every later request must pick a different code, so the user's match identifies
+  // exactly one row even when several requests are pending.
+  for (let index = 0; index < 20; index++) {
+    const other = pairings.request({ close: () => {} });
+    if (!other) break;
+    assert.notEqual(other.code, real.code, "a pending impostor must never share the real extension's code");
+    pairings.take(other.id);
+  }
+});

@@ -28,3 +28,16 @@ test("contract extraction does not delete unrelated files in --out", async () =>
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the MCP client reports the package version, not a stale literal", async () => {
+  // A hardcoded version here previously drifted from package.json, so MCP servers
+  // were told a version that no longer existed.
+  const { readFile } = await import("node:fs/promises");
+  const declared = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+  const manifest = JSON.parse(await readFile(new URL("../extension/manifest.json", import.meta.url), "utf8")).version;
+  assert.equal(manifest, declared, "the extension manifest version must match the package version");
+  const source = await readFile(new URL("../src/apps/runtime.js", import.meta.url), "utf8");
+  assert.equal(/version:\s*"\d+\.\d+\.\d+"/.test(source), false,
+    "the MCP client identity must not hardcode a version literal");
+  assert.match(source, /PACKAGE_VERSION/, "the version must come from package.json");
+});
